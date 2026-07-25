@@ -1,24 +1,27 @@
 """
-Builder embed untuk notifikasi join/leave, berdasarkan config dari panel builder.
+Embed builder for join/leave notifications.
 """
 import discord
 from utils.variables import resolve_variables
 
-# Garis tipis (box-drawing character), BUKAN blok tebal, biar rapi kayak referensi.
+# Thin box-drawing separator line (NOT a thick block) for a clean, subtle look.
 DIVIDER = "─" * 24
 
 DARK_RED = 0x8B0000
 
 
-def _parse_color(color_hex: str) -> discord.Color:
+def parse_color(color_hex: str | None, default: int = DARK_RED) -> int:
+    """Parse a '#RRGGBB' string into an int color. Falls back to `default` if invalid/empty."""
+    if not color_hex:
+        return default
     try:
-        return discord.Color(int(color_hex.replace("#", ""), 16))
-    except Exception:
-        return discord.Color(DARK_RED)
+        return int(color_hex.strip().lstrip("#"), 16)
+    except ValueError:
+        return default
 
 
 def build_joinleave_embed(config: dict, member=None, guild: discord.Guild = None) -> discord.Embed:
-    color = _parse_color(config.get("color") or f"#{DARK_RED:06X}")
+    color = discord.Color(parse_color(config.get("color")))
 
     title = resolve_variables(config.get("title") or "", member, guild) or None
     description = resolve_variables(config.get("description") or "", member, guild) or None
@@ -55,7 +58,7 @@ def build_joinleave_embed(config: dict, member=None, guild: discord.Guild = None
                 inline=bool(block.get("inline", False)),
             )
 
-    # Footer: pakai teks custom dari builder kalau ada, fallback ke default branding.
+    # Footer: use the custom text from the builder if set, otherwise fall back to branding.
     footer_text = resolve_variables(config.get("footer") or "", member, guild).strip()
     if not footer_text:
         footer_text = "Nocturne Manager • Join & Leave System"
@@ -69,7 +72,7 @@ def build_joinleave_embed(config: dict, member=None, guild: discord.Guild = None
 
 
 def resolve_content(config: dict, member=None, guild: discord.Guild = None) -> str | None:
-    """Teks yang dikirim di luar embed (di atas embed), misal sambutan/mention."""
+    """Text sent outside the embed (above it), e.g. a greeting/mention."""
     text = resolve_variables(config.get("content") or "", member, guild).strip()
     return text or None
 

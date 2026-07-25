@@ -1,6 +1,6 @@
 """
-Resolver variabel dinamis untuk embed join/leave.
-Semua placeholder pakai format {nama_variabel}.
+Dynamic variable resolver used in join/leave embeds.
+All placeholders use the {variable_name} format.
 """
 import discord
 from datetime import datetime
@@ -39,16 +39,16 @@ def resolve_variables(text: str, member: "discord.Member | discord.User" = None,
 
 
 VARIABLE_HELP = (
-    "**🧩 Variabel yang bisa dipakai di Title / Description / Field / Thumbnail / Banner:**\n"
-    "`{user}` — mention user\n"
+    "**🧩 Variables you can use in Title / Description / Field / Footer / Content / Thumbnail / Banner:**\n"
+    "`{user}` — mentions the user\n"
     "`{user_name}` — username\n"
     "`{user_display}` — nickname / display name\n"
-    "`{user_id}` — ID user\n"
-    "`{user_avatar}` — link avatar user (cocok dipakai di Thumbnail)\n"
-    "`{user_created}` — tanggal akun Discord dibuat\n"
-    "`{server}` — nama server\n"
-    "`{server_icon}` — link icon server\n"
-    "`{member_count}` — jumlah member sekarang\n"
-    "`{date}` — tanggal hari ini\n"
-    "`{time}` — jam sekarang\n"
+    "`{user_id}` — user ID\n"
+    "`{user_avatar}` — the user's avatar link (great for Thumbnail)\n"
+    "`{user_created}` — the date the account was created\n"
+    "`{server}` — server name\n"
+    "`{server_icon}` — server icon link\n"
+    "`{member_count}` — current member count\n"
+    "`{date}` — today's date\n"
+    "`{time}` — current time\n"
 )
