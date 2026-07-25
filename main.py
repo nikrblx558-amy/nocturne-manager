@@ -1,8 +1,9 @@
 """
 Nocturne Manager
 -----------------
-Bot Discord untuk notifikasi join/leave (dengan panel builder interaktif)
-dan notifikasi status bot (online/maintenance/update/offline).
+A Discord bot for join/leave notifications (with a live-preview panel builder)
+and an Application System (staff applications, whitelist forms, etc.) — also
+with a live-preview panel builder.
 """
 import asyncio
 import logging
@@ -22,12 +23,18 @@ logging.basicConfig(
 logger = logging.getLogger("nocturne")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-DEV_GUILD_ID = os.getenv("GUILD_ID")  # opsional, untuk sync instan pas development
-PREFIX = os.getenv("PREFIX", "n!")   # prefix untuk command klasik, contoh: n!joinleave builder join
+DEV_GUILD_ID = os.getenv("GUILD_ID")  # optional, for instant sync during development
+PREFIX = os.getenv("PREFIX", "n!")    # prefix for classic commands, e.g. n!joinleave builder join
 
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True  # wajib aktif biar prefix command bisa baca isi pesan
+intents.message_content = True  # REQUIRED for prefix commands to read message text.
+# ⚠️ Setting this in code is NOT enough — you must ALSO enable
+# "MESSAGE CONTENT INTENT" under your app's Bot tab on
+# https://discord.com/developers/applications, then save changes.
+# Without that toggle, Discord will silently withhold message content from
+# the bot and prefix commands (n!...) will never trigger, even though slash
+# commands keep working fine.
 
 
 class NocturneManager(commands.Bot):
@@ -35,45 +42,53 @@ class NocturneManager(commands.Bot):
         super().__init__(command_prefix=commands.when_mentioned_or(PREFIX), intents=intents, help_command=None)
 
     async def setup_hook(self):
-        for ext in ("cogs.joinleave", "cogs.status_panel"):
+        for ext in ("cogs.joinleave", "cogs.application"):
             await self.load_extension(ext)
-            logger.info("Extension dimuat: %s", ext)
+            logger.info("Loaded extension: %s", ext)
 
-        # Sync global WAJIB selalu jalan — ini yang bikin command muncul di
-        # SEMUA server (termasuk server baru yang belum pernah invite bot).
-        # Pertama kali sync global bisa butuh waktu sampai ~1 jam buat propagasi.
+        # Global sync MUST always run — this is what makes commands show up in
+        # EVERY server (including new ones the bot hasn't been in before).
+        # The first global sync can take up to ~1 hour to fully propagate.
         synced_global = await self.tree.sync()
-        logger.info("Sync %s slash command secara global (bisa sampai 1 jam propagasi pertama kali)", len(synced_global))
+        logger.info("Synced %s slash commands globally (first sync can take up to 1 hour to propagate)", len(synced_global))
 
-        # Kalau GUILD_ID diisi, TAMBAHAN sync instan ke server tester itu aja,
-        # supaya pas development gak perlu nunggu 1 jam. Ini gak menggantikan
-        # sync global di atas.
+        # If GUILD_ID is set, ALSO sync instantly to that one server, so you
+        # don't have to wait during development. This does not replace the
+        # global sync above.
         if DEV_GUILD_ID:
             guild = discord.Object(id=int(DEV_GUILD_ID))
             self.tree.copy_global_to(guild=guild)
             synced_guild = await self.tree.sync(guild=guild)
-            logger.info("Tambahan: sync %s command instan ke guild dev %s", len(synced_guild), DEV_GUILD_ID)
+            logger.info("Additionally synced %s commands instantly to dev guild %s", len(synced_guild), DEV_GUILD_ID)
 
     async def on_ready(self):
-        logger.info("Login sebagai %s (ID: %s)", self.user, self.user.id)
+        logger.info("Logged in as %s (ID: %s)", self.user, self.user.id)
+        logger.info("Prefix commands active with prefix: '%s' (message_content intent: %s)", PREFIX, intents.message_content)
         await self.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.watching, name="server kamu | Nocturne Manager")
+            activity=discord.Activity(type=discord.ActivityType.watching, name="applications & new members")
         )
 
 
 bot = NocturneManager()
 
 
+@bot.command(name="ping")
+async def ping_cmd(ctx: commands.Context):
+    """Simple sanity check to confirm prefix commands are working."""
+    latency_ms = round(bot.latency * 1000)
+    await ctx.send(f"🏓 Pong! Prefix commands are working. Latency: {latency_ms}ms")
+
+
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
-        msg = "❌ Kamu butuh izin **Manage Server** untuk menjalankan command ini."
+        msg = "❌ You need the **Manage Server** permission to use this command."
     elif isinstance(error, app_commands.CheckFailure):
-        msg = "❌ Command ini cuma bisa dipakai owner bot."
+        msg = "❌ You're not allowed to use this command."
     elif isinstance(error, app_commands.CommandOnCooldown):
-        msg = f"⏳ Tunggu {error.retry_after:.1f} detik lagi."
+        msg = f"⏳ Please wait {error.retry_after:.1f}s before trying again."
     else:
-        msg = "⚠️ Terjadi error saat menjalankan command ini. Sudah dicatat di log."
+        msg = "⚠️ Something went wrong running this command. It's been logged."
         logger.exception("App command error", exc_info=error)
 
     try:
@@ -88,26 +103,26 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 @bot.event
 async def on_command_error(ctx: commands.Context, error: commands.CommandError):
     if isinstance(error, commands.CommandNotFound):
-        return  # abaikan biar gak spam kalau orang salah ketik prefix command
+        return  # ignore so a typo'd prefix command doesn't spam the channel
     if isinstance(error, commands.NotOwner):
-        await ctx.send("❌ Command ini cuma bisa dipakai owner bot.")
+        await ctx.send("❌ This command can only be used by the bot owner.")
         return
     if isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ Kamu butuh izin **Manage Server** untuk menjalankan command ini.")
+        await ctx.send("❌ You need the **Manage Server** permission to use this command.")
         return
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"⚠️ Ada parameter yang kurang: `{error.param.name}`. Cek lagi formatnya.")
+        await ctx.send(f"⚠️ Missing a required argument: `{error.param.name}`. Check the command format.")
         return
     if isinstance(error, commands.BadArgument):
-        await ctx.send("⚠️ Salah satu parameter formatnya salah. Cek lagi command-nya.")
+        await ctx.send("⚠️ One of the arguments was in the wrong format. Check the command again.")
         return
     logger.exception("Prefix command error", exc_info=error)
-    await ctx.send("⚠️ Terjadi error saat menjalankan command ini. Sudah dicatat di log.")
+    await ctx.send("⚠️ Something went wrong running this command. It's been logged.")
 
 
 async def main():
     if not TOKEN:
-        raise SystemExit("DISCORD_TOKEN belum diset. Cek file .env atau environment variable di Railway.")
+        raise SystemExit("DISCORD_TOKEN is not set. Check your .env file or Railway environment variables.")
     async with bot:
         await bot.start(TOKEN)
 
