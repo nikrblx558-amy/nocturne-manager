@@ -8,6 +8,7 @@ one at a time in the user's DMs), and review submissions with Accept/Deny
 buttons in a log channel.
 """
 import re
+import os
 import asyncio
 from datetime import datetime, timezone
 
@@ -17,6 +18,12 @@ from discord.ext import commands
 
 from utils.storage import JSONStore
 from utils.embed_builder import parse_color
+
+# Branding links shown to applicants after they finish a DM application.
+# Set these as environment variables — leave empty to hide that part.
+BOT_INVITE_URL = os.getenv("BOT_INVITE_URL")
+SUPPORT_SERVER_URL = os.getenv("SUPPORT_SERVER_URL")
+BOT_BANNER_URL = os.getenv("BOT_BANNER_URL")
 
 store = JSONStore("applications.json")
 
@@ -703,9 +710,38 @@ class ApplicationSystem(commands.Cog):
                 answers.append((question["label"], reply.content))
 
             await dm_channel.send("✅ Thanks! Your application has been submitted for review.")
+            await self._send_branding_embed(dm_channel)
             await self.finalize_submission(guild, user, guild_id, panel_id, config, answers)
         finally:
             self.active_applications.discard(user.id)
+
+    async def _send_branding_embed(self, dm_channel: discord.DMChannel):
+        """Sent right after a DM application is completed — shows the bot's
+        own name/icon/banner with Invite & Support Server buttons."""
+        bot_user = self.bot.user
+        embed = discord.Embed(
+            title=bot_user.name,
+            description="Want **Nocturne Manager** in your own server too? Check the links below!",
+            color=discord.Color(parse_color(None)),
+        )
+        embed.set_thumbnail(url=bot_user.display_avatar.url)
+        if BOT_BANNER_URL:
+            embed.set_image(url=BOT_BANNER_URL)
+        embed.set_footer(text="Nocturne Manager • Application System")
+
+        view = discord.ui.View(timeout=None)
+        if BOT_INVITE_URL:
+            view.add_item(discord.ui.Button(label="Invite Bot", style=discord.ButtonStyle.link, url=BOT_INVITE_URL))
+        if SUPPORT_SERVER_URL:
+            view.add_item(discord.ui.Button(label="Join Support Server", style=discord.ButtonStyle.link, url=SUPPORT_SERVER_URL))
+
+        try:
+            if view.children:
+                await dm_channel.send(embed=embed, view=view)
+            else:
+                await dm_channel.send(embed=embed)
+        except discord.HTTPException:
+            pass
 
     async def finalize_submission(self, guild: discord.Guild, user: discord.abc.User, guild_id, panel_id: str, config: dict, answers: list):
         panels = await store.get_path(str(guild_id), "panels", default={})
