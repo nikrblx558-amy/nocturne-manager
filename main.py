@@ -39,14 +39,20 @@ class NocturneManager(commands.Bot):
             await self.load_extension(ext)
             logger.info("Extension dimuat: %s", ext)
 
+        # Sync global WAJIB selalu jalan — ini yang bikin command muncul di
+        # SEMUA server (termasuk server baru yang belum pernah invite bot).
+        # Pertama kali sync global bisa butuh waktu sampai ~1 jam buat propagasi.
+        synced_global = await self.tree.sync()
+        logger.info("Sync %s slash command secara global (bisa sampai 1 jam propagasi pertama kali)", len(synced_global))
+
+        # Kalau GUILD_ID diisi, TAMBAHAN sync instan ke server tester itu aja,
+        # supaya pas development gak perlu nunggu 1 jam. Ini gak menggantikan
+        # sync global di atas.
         if DEV_GUILD_ID:
             guild = discord.Object(id=int(DEV_GUILD_ID))
             self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            logger.info("Sync %s slash command ke guild dev %s (instan)", len(synced), DEV_GUILD_ID)
-        else:
-            synced = await self.tree.sync()
-            logger.info("Sync %s slash command secara global (bisa sampai 1 jam propagasi)", len(synced))
+            synced_guild = await self.tree.sync(guild=guild)
+            logger.info("Tambahan: sync %s command instan ke guild dev %s", len(synced_guild), DEV_GUILD_ID)
 
     async def on_ready(self):
         logger.info("Login sebagai %s (ID: %s)", self.user, self.user.id)
