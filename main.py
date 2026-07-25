@@ -23,15 +23,16 @@ logger = logging.getLogger("nocturne")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 DEV_GUILD_ID = os.getenv("GUILD_ID")  # opsional, untuk sync instan pas development
+PREFIX = os.getenv("PREFIX", "n!")   # prefix untuk command klasik, contoh: n!joinleave builder join
 
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = False
+intents.message_content = True  # wajib aktif biar prefix command bisa baca isi pesan
 
 
 class NocturneManager(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix="nm!unused-", intents=intents, help_command=None)
+        super().__init__(command_prefix=commands.when_mentioned_or(PREFIX), intents=intents, help_command=None)
 
     async def setup_hook(self):
         for ext in ("cogs.joinleave", "cogs.status_panel"):
@@ -61,6 +62,8 @@ bot = NocturneManager()
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         msg = "❌ Kamu butuh izin **Manage Server** untuk menjalankan command ini."
+    elif isinstance(error, app_commands.CheckFailure):
+        msg = "❌ Command ini cuma bisa dipakai owner bot."
     elif isinstance(error, app_commands.CommandOnCooldown):
         msg = f"⏳ Tunggu {error.retry_after:.1f} detik lagi."
     else:
@@ -74,6 +77,26 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             await interaction.response.send_message(msg, ephemeral=True)
     except discord.HTTPException:
         pass
+
+
+@bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.CommandNotFound):
+        return  # abaikan biar gak spam kalau orang salah ketik prefix command
+    if isinstance(error, commands.NotOwner):
+        await ctx.send("❌ Command ini cuma bisa dipakai owner bot.")
+        return
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Kamu butuh izin **Manage Server** untuk menjalankan command ini.")
+        return
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(f"⚠️ Ada parameter yang kurang: `{error.param.name}`. Cek lagi formatnya.")
+        return
+    if isinstance(error, commands.BadArgument):
+        await ctx.send("⚠️ Salah satu parameter formatnya salah. Cek lagi command-nya.")
+        return
+    logger.exception("Prefix command error", exc_info=error)
+    await ctx.send("⚠️ Terjadi error saat menjalankan command ini. Sudah dicatat di log.")
 
 
 async def main():
