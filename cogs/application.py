@@ -338,7 +338,19 @@ class PublishChannelSelect(discord.ui.ChannelSelect):
         # while we send the message + write to storage below.
         await interaction.response.defer(ephemeral=True)
 
-        channel = self.values[0]
+        # discord.ui.ChannelSelect.values returns lightweight AppCommandChannel
+        # objects (no .send()), NOT the real channel — resolve it properly first.
+        channel_id = self.values[0].id
+        channel = interaction.guild.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await interaction.guild.fetch_channel(channel_id)
+            except discord.HTTPException:
+                await interaction.edit_original_response(
+                    content="❌ Couldn't find that channel. Please try again.", view=None
+                )
+                return
+
         embed = build_application_embed(self.outer.config)
         apply_view = build_apply_view(self.outer.guild.id, self.outer.panel_id, self.outer.config)
 
