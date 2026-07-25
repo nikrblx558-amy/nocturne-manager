@@ -19,7 +19,8 @@ from utils.embed_builder import parse_color
 
 store = JSONStore("applications.json")
 
-MAX_QUESTIONS = 5  # Discord modals allow a maximum of 5 components
+CHUNK_SIZE = 5          # Discord modals allow a maximum of 5 components per modal
+MAX_QUESTIONS = 25      # Discord embeds allow a maximum of 25 fields, used to display Q&A
 
 
 def make_slug(name: str) -> str:
@@ -36,6 +37,7 @@ def default_application_config(name: str) -> dict:
         "banner": None,
         "color": "#8B0000",
         "footer": "",
+        "footer_icon": None,
         "button_label": "Apply Now",
         "button_emoji": "📝",
         "questions": [],
@@ -58,7 +60,11 @@ def build_application_embed(config: dict) -> discord.Embed:
     if banner and str(banner).startswith("http"):
         embed.set_image(url=banner)
     footer = config.get("footer") or "Nocturne Manager • Application System"
-    embed.set_footer(text=footer)
+    footer_icon = config.get("footer_icon")
+    if footer_icon and str(footer_icon).startswith("http"):
+        embed.set_footer(text=footer, icon_url=footer_icon)
+    else:
+        embed.set_footer(text=footer)
     return embed
 
 
@@ -181,14 +187,20 @@ class AppFooterModal(discord.ui.Modal, title="Set Footer"):
     def __init__(self, view: "ApplicationBuilderView"):
         super().__init__()
         self.view_ref = view
-        self.input = discord.ui.TextInput(
+        self.text_input = discord.ui.TextInput(
             label="Footer text (leave empty for default)", default=view.config.get("footer") or "",
             max_length=200, required=False,
         )
-        self.add_item(self.input)
+        self.icon_input = discord.ui.TextInput(
+            label="Footer icon URL (optional)", default=view.config.get("footer_icon") or "",
+            max_length=300, required=False,
+        )
+        self.add_item(self.text_input)
+        self.add_item(self.icon_input)
 
     async def on_submit(self, interaction: discord.Interaction):
-        self.view_ref.config["footer"] = self.input.value
+        self.view_ref.config["footer"] = self.text_input.value
+        self.view_ref.config["footer_icon"] = self.icon_input.value or None
         await self.view_ref.save_and_refresh(interaction)
 
 
@@ -238,7 +250,7 @@ class AddQuestionModal(discord.ui.Modal, title="Add Question"):
         questions = self.view_ref.config.setdefault("questions", [])
         if len(questions) >= MAX_QUESTIONS:
             await interaction.response.send_message(
-                f"⚠️ Maximum of {MAX_QUESTIONS} questions (Discord modal limit).", ephemeral=True
+                f"⚠️ Maximum of {MAX_QUESTIONS} questions (Discord embed field limit).", ephemeral=True
             )
             return
         style = "paragraph" if self.style_input.value.strip().lower().startswith("p") else "short"
@@ -247,13 +259,20 @@ class AddQuestionModal(discord.ui.Modal, title="Add Question"):
 
 
 class ApplyModal(discord.ui.Modal):
-    def __init__(self, guild_id: int, panel_id: str, config: dict):
-        super().__init__(title=(config.get("title") or "Application")[:45])
+    """One 'page' of the application form. If there are more than 5
+    questions, additional pages are chained automatically after each submit."""
+
+    def __init__(self, guild_id: int, panel_id: str, config: dict, questions_chunk: list, chunk_index: int, total_chunks: int):
+        base_title = config.get("title") or "Application"
+        suffix = f" ({chunk_index + 1}/{total_chunks})" if total_chunks > 1 else ""
+        super().__init__(title=(base_title[:45 - len(suffix)] + suffix)[:45])
         self.guild_id = guild_id
         self.panel_id = panel_id
         self.config = config
+        self.chunk_index = chunk_index
+        self.total_chunks = total_chunks
         self.question_inputs = []
-        for q in config.get("questions", [])[:MAX_QUESTIONS]:
+        for q in questions_chunk:
             style = discord.TextStyle.paragraph if q.get("style") == "paragraph" else discord.TextStyle.short
             text_input = discord.ui.TextInput(label=q["label"][:45], style=style, required=True, max_length=1000)
             self.question_inputs.append((q["label"], text_input))
@@ -261,7 +280,10 @@ class ApplyModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         cog: "ApplicationSystem" = interaction.client.get_cog("ApplicationSystem")
-        await cog.handle_submission(interaction, self.guild_id, self.panel_id, self.config, self.question_inputs)
+        await cog.handle_modal_chunk(
+            interaction, self.guild_id, self.panel_id, self.config,
+            self.question_inputs, self.chunk_index, self.total_chunks,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -312,10 +334,26 @@ class PublishChannelSelect(discord.ui.ChannelSelect):
         super().__init__(placeholder="Choose a channel to post the panel in...", channel_types=[discord.ChannelType.text, discord.ChannelType.news])
 
     async def callback(self, interaction: discord.Interaction):
+        # Acknowledge immediately so Discord doesn't time out the interaction
+        # while we send the message + write to storage below.
+        await interaction.response.defer(ephemeral=True)
+
         channel = self.values[0]
         embed = build_application_embed(self.outer.config)
         apply_view = build_apply_view(self.outer.guild.id, self.outer.panel_id, self.outer.config)
-        message = await channel.send(embed=embed, view=apply_view)
+
+        try:
+            message = await channel.send(embed=embed, view=apply_view)
+        except discord.Forbidden:
+            await interaction.edit_original_response(
+                content=f"❌ I don't have permission to send messages in {channel.mention}. "
+                        f"Please check my permissions there (View Channel, Send Messages, Embed Links) and try again.",
+                view=None,
+            )
+            return
+        except discord.HTTPException as exc:
+            await interaction.edit_original_response(content=f"❌ Failed to publish the panel: {exc}", view=None)
+            return
 
         panels = await self.outer.store.get_path(str(self.outer.guild.id), "panels", default={})
         cfg = panels.get(self.outer.panel_id, self.outer.config)
@@ -324,7 +362,7 @@ class PublishChannelSelect(discord.ui.ChannelSelect):
         panels[self.outer.panel_id] = cfg
         await self.outer.store.set_path(str(self.outer.guild.id), "panels", panels)
 
-        await interaction.response.edit_message(content=f"✅ Panel published to {channel.mention}!", view=None)
+        await interaction.edit_original_response(content=f"✅ Panel published to {channel.mention}!", view=None)
 
 
 class PublishChannelPickView(discord.ui.View):
@@ -474,6 +512,12 @@ class ApplicationBuilderView(discord.ui.View):
 class ApplicationSystem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Short-lived state for multi-page application forms (>5 questions).
+        # Keyed by (guild_id, panel_id, user_id). Only needed for the few
+        # seconds between a user submitting one page and the next page
+        # opening — not meant to survive a bot restart.
+        self.pending_answers: dict = {}
+        self.pending_chunks: dict = {}
 
     app_group = app_commands.Group(name="application", description="Create & manage application panels")
 
@@ -624,12 +668,48 @@ class ApplicationSystem(commands.Cog):
         if not config:
             await interaction.response.send_message("⚠️ This application panel is no longer available.", ephemeral=True)
             return
-        if not config.get("questions"):
+        questions = config.get("questions", [])
+        if not questions:
             await interaction.response.send_message("⚠️ This panel has no questions configured.", ephemeral=True)
             return
-        await interaction.response.send_modal(ApplyModal(int(guild_id), panel_id, config))
 
-    async def handle_submission(self, interaction: discord.Interaction, guild_id: int, panel_id: str, config: dict, question_inputs):
+        chunks = [questions[i:i + CHUNK_SIZE] for i in range(0, len(questions), CHUNK_SIZE)]
+        key = (guild_id, panel_id, str(interaction.user.id))
+        self.pending_answers[key] = []
+        self.pending_chunks[key] = chunks
+
+        await interaction.response.send_modal(
+            ApplyModal(int(guild_id), panel_id, config, chunks[0], 0, len(chunks))
+        )
+
+    async def handle_modal_chunk(self, interaction: discord.Interaction, guild_id: int, panel_id: str, config: dict, question_inputs, chunk_index: int, total_chunks: int):
+        key = (str(guild_id), panel_id, str(interaction.user.id))
+        answers = self.pending_answers.setdefault(key, [])
+        answers.extend([(label, ti.value) for label, ti in question_inputs])
+
+        next_index = chunk_index + 1
+        if next_index < total_chunks:
+            chunks = self.pending_chunks.get(key, [])
+            if next_index >= len(chunks):
+                # Safety net: pending state got lost (e.g. bot restarted mid-form).
+                await interaction.response.send_message(
+                    "⚠️ Something went wrong continuing your application. Please click Apply again to restart the form.",
+                    ephemeral=True,
+                )
+                self.pending_answers.pop(key, None)
+                self.pending_chunks.pop(key, None)
+                return
+            await interaction.response.send_modal(
+                ApplyModal(guild_id, panel_id, config, chunks[next_index], next_index, total_chunks)
+            )
+            return
+
+        # Last page submitted — finalize and send to the log channel.
+        final_answers = self.pending_answers.pop(key, answers)
+        self.pending_chunks.pop(key, None)
+        await self.finalize_submission(interaction, guild_id, panel_id, config, final_answers)
+
+    async def finalize_submission(self, interaction: discord.Interaction, guild_id: int, panel_id: str, config: dict, answers: list):
         panels = await store.get_path(str(guild_id), "panels", default={})
         fresh_config = panels.get(panel_id, config)
         log_channel_id = fresh_config.get("log_channel_id")
@@ -646,8 +726,8 @@ class ApplicationSystem(commands.Cog):
             color=discord.Color(parse_color(fresh_config.get("color"))),
             timestamp=datetime.now(timezone.utc),
         )
-        for label, text_input in question_inputs:
-            embed.add_field(name=label[:256], value=(text_input.value or "-")[:1024], inline=False)
+        for label, value in answers[:25]:
+            embed.add_field(name=label[:256], value=(value or "-")[:1024], inline=False)
         embed.set_footer(text="Nocturne Manager • Application System")
         if interaction.user.display_avatar:
             embed.set_thumbnail(url=interaction.user.display_avatar.url)
