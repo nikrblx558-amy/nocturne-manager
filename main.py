@@ -46,20 +46,25 @@ class NocturneManager(commands.Bot):
             await self.load_extension(ext)
             logger.info("Loaded extension: %s", ext)
 
-        # Global sync MUST always run — this is what makes commands show up in
-        # EVERY server (including new ones the bot hasn't been in before).
-        # The first global sync can take up to ~1 hour to fully propagate.
-        synced_global = await self.tree.sync()
-        logger.info("Synced %s slash commands globally (first sync can take up to 1 hour to propagate)", len(synced_global))
-
-        # If GUILD_ID is set, ALSO sync instantly to that one server, so you
-        # don't have to wait during development. This does not replace the
-        # global sync above.
+        # IMPORTANT: we only ever use GLOBAL commands. Guild-specific copies
+        # are intentionally NOT created anymore — having both a global command
+        # and a guild-specific command with the same name makes Discord show
+        # TWO separate entries in that server (duplicates), even though
+        # they're "the same" command to a human.
         if DEV_GUILD_ID:
+            # One-time cleanup: wipe any guild-specific commands left over
+            # from before, so the duplicates disappear from the test server.
             guild = discord.Object(id=int(DEV_GUILD_ID))
-            self.tree.copy_global_to(guild=guild)
-            synced_guild = await self.tree.sync(guild=guild)
-            logger.info("Additionally synced %s commands instantly to dev guild %s", len(synced_guild), DEV_GUILD_ID)
+            self.tree.clear_commands(guild=guild)
+            await self.tree.sync(guild=guild)
+            logger.info("Cleared leftover guild-specific commands in dev guild %s (fixes duplicates)", DEV_GUILD_ID)
+
+        # Global sync is what makes commands show up in EVERY server,
+        # including new ones. The first global sync after a change can take
+        # up to ~1 hour (sometimes longer due to Discord client-side caching)
+        # to fully propagate — this is normal and not a bug.
+        synced_global = await self.tree.sync()
+        logger.info("Synced %s slash commands globally (propagation can take up to 1 hour, sometimes more)", len(synced_global))
 
     async def on_ready(self):
         logger.info("Logged in as %s (ID: %s)", self.user, self.user.id)
