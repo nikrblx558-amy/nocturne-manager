@@ -12,11 +12,13 @@ from utils.variables import VARIABLE_HELP
 DEFAULT_JOIN = {
     "enabled": False,
     "channel_id": None,
+    "content": "👋 Selamat datang {user} di **{server}**!",
     "title": "👋 Selamat Datang!",
     "description": "Halo {user}, selamat datang di **{server}**!",
     "thumbnail": "{user_avatar}",
     "banner": None,
-    "color": "#57F287",
+    "color": "#8B0000",
+    "footer": "",
     "blocks": [
         {"type": "field", "name": "Member Ke-", "value": "{member_count}", "inline": True}
     ],
@@ -26,11 +28,13 @@ DEFAULT_JOIN = {
 DEFAULT_LEAVE = {
     "enabled": False,
     "channel_id": None,
+    "content": "",
     "title": "👋 Sampai Jumpa",
     "description": "**{user_name}** telah meninggalkan **{server}**.",
     "thumbnail": "{user_avatar}",
     "banner": None,
-    "color": "#ED4245",
+    "color": "#8B0000",
+    "footer": "",
     "blocks": [
         {"type": "field", "name": "Sisa Member", "value": "{member_count}", "inline": True}
     ],
@@ -117,7 +121,7 @@ class ColorModal(discord.ui.Modal, title="Set Warna Embed"):
         self.view_ref = view
         self.color_input = discord.ui.TextInput(
             label="Kode warna hex (contoh: #FFD54A)",
-            default=view.config.get("color", "#FFD54A"),
+            default=view.config.get("color", "#8B0000"),
             max_length=7,
         )
         self.add_item(self.color_input)
@@ -127,6 +131,41 @@ class ColorModal(discord.ui.Modal, title="Set Warna Embed"):
         if not val.startswith("#"):
             val = "#" + val
         self.view_ref.config["color"] = val
+        await self.view_ref.save_and_refresh(interaction)
+
+
+class FooterModal(discord.ui.Modal, title="Set Footer"):
+    def __init__(self, view: "JoinLeaveBuilderView"):
+        super().__init__()
+        self.view_ref = view
+        self.footer_input = discord.ui.TextInput(
+            label="Teks Footer (kosongkan untuk default)",
+            default=view.config.get("footer") or "",
+            max_length=200,
+            required=False,
+        )
+        self.add_item(self.footer_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.view_ref.config["footer"] = self.footer_input.value
+        await self.view_ref.save_and_refresh(interaction)
+
+
+class ContentModal(discord.ui.Modal, title="Set Teks Sambutan (di luar embed)"):
+    def __init__(self, view: "JoinLeaveBuilderView"):
+        super().__init__()
+        self.view_ref = view
+        self.content_input = discord.ui.TextInput(
+            label="Teks di atas embed (bisa mention {user})",
+            style=discord.TextStyle.paragraph,
+            default=view.config.get("content") or "",
+            max_length=1000,
+            required=False,
+        )
+        self.add_item(self.content_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.view_ref.config["content"] = self.content_input.value
         await self.view_ref.save_and_refresh(interaction)
 
 
@@ -298,9 +337,11 @@ class JoinLeaveBuilderView(discord.ui.View):
         status = "✅ Aktif" if self.config.get("enabled") else "⛔ Nonaktif"
         channel = f"<#{self.config['channel_id']}>" if self.config.get("channel_id") else "*belum diset*"
         links = len(self.config.get("row_links", []))
+        content_preview = self.config.get("content") or "*(kosong)*"
         return (
             f"### 🛠️ PANEL BUILDER — NOTIFIKASI {self.jl_type.upper()}\n"
             f"Status: **{status}**  •  Channel: {channel}  •  Tombol link: {links}/5\n"
+            f"Teks sambutan (di luar embed): {content_preview}\n"
             f"-# Preview di bawah pakai data contoh — variabel otomatis diganti saat member join/leave beneran."
         )
 
@@ -358,6 +399,14 @@ class JoinLeaveBuilderView(discord.ui.View):
         await interaction.response.send_message(VARIABLE_HELP, ephemeral=True)
 
     # ---- Row 4 ----
+    @discord.ui.button(label="Sambutan", emoji="💬", style=discord.ButtonStyle.secondary, row=4)
+    async def btn_content(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ContentModal(self))
+
+    @discord.ui.button(label="Footer", emoji="🔻", style=discord.ButtonStyle.secondary, row=4)
+    async def btn_footer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(FooterModal(self))
+
     @discord.ui.button(label="Enable/Disable", emoji="🔌", style=discord.ButtonStyle.primary, row=4)
     async def btn_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.config["enabled"] = not self.config.get("enabled", False)
