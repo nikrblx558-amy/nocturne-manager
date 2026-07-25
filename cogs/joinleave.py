@@ -21,9 +21,9 @@ def _normalize_type(jl_type: str) -> str | None:
 
 def _parse_bool(text: str) -> bool | None:
     text = (text or "").strip().lower()
-    if text in ("on", "yes", "true", "1", "aktif", "enable", "enabled"):
+    if text in ("on", "yes", "true", "1", "enable", "enabled"):
         return True
-    if text in ("off", "no", "false", "0", "nonaktif", "disable", "disabled"):
+    if text in ("off", "no", "false", "0", "disable", "disabled"):
         return False
     return None
 
@@ -37,11 +37,11 @@ class JoinLeave(commands.Cog):
     # =================================================================
     jl_group = app_commands.Group(
         name="joinleave",
-        description="Pengaturan notifikasi member join & leave",
+        description="Configure member join & leave notifications",
     )
 
-    @jl_group.command(name="builder", description="Buka panel builder embed join/leave (live preview)")
-    @app_commands.describe(type="Pilih builder untuk Join atau Leave")
+    @jl_group.command(name="builder", description="Open the join/leave embed builder (live preview)")
+    @app_commands.describe(type="Open the builder for Join or Leave")
     @app_commands.choices(type=TYPE_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def builder(self, interaction: discord.Interaction, type: app_commands.Choice[str]):
@@ -63,7 +63,7 @@ class JoinLeave(commands.Cog):
         )
         view.message = await interaction.original_response()
 
-    @jl_group.command(name="toggle", description="Aktifkan/nonaktifkan notifikasi join/leave secara cepat")
+    @jl_group.command(name="toggle", description="Quickly enable/disable join or leave notifications")
     @app_commands.choices(type=TYPE_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def toggle(self, interaction: discord.Interaction, type: app_commands.Choice[str], enabled: bool):
@@ -71,34 +71,34 @@ class JoinLeave(commands.Cog):
         config = await store.get_path(str(interaction.guild_id), type.value, default=default)
         config["enabled"] = enabled
         await store.set_path(str(interaction.guild_id), type.value, config)
-        status = "diaktifkan ✅" if enabled else "dinonaktifkan ⛔"
-        await interaction.response.send_message(f"Notifikasi **{type.value}** berhasil {status}.", ephemeral=True)
+        status = "enabled ✅" if enabled else "disabled ⛔"
+        await interaction.response.send_message(f"**{type.value}** notifications have been {status}.", ephemeral=True)
 
-    @jl_group.command(name="test", description="Kirim contoh embed join/leave ke channel yang sudah diset")
+    @jl_group.command(name="test", description="Send a sample join/leave embed to the configured channel")
     @app_commands.choices(type=TYPE_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def test(self, interaction: discord.Interaction, type: app_commands.Choice[str]):
         default = DEFAULT_JOIN if type.value == "join" else DEFAULT_LEAVE
         config = await store.get_path(str(interaction.guild_id), type.value, default=default)
         if not config.get("channel_id"):
-            await interaction.response.send_message("⚠️ Channel belum diset. Buka `/joinleave builder` dulu.", ephemeral=True)
+            await interaction.response.send_message("⚠️ No channel set yet. Open `/joinleave builder` first.", ephemeral=True)
             return
         channel = interaction.guild.get_channel(config["channel_id"])
         if not channel:
-            await interaction.response.send_message("⚠️ Channel tidak ditemukan lagi, cek ulang di builder.", ephemeral=True)
+            await interaction.response.send_message("⚠️ That channel no longer exists, check the builder again.", ephemeral=True)
             return
 
         await self._dispatch(channel, config, member=interaction.user, guild=interaction.guild)
-        await interaction.response.send_message(f"✅ Test embed **{type.value}** dikirim ke {channel.mention}.", ephemeral=True)
+        await interaction.response.send_message(f"✅ Test **{type.value}** embed sent to {channel.mention}.", ephemeral=True)
 
     # =================================================================
-    # PREFIX COMMANDS (n!joinleave ...)
+    # PREFIX COMMANDS (e.g. n!joinleave ...)
     # =================================================================
     @commands.group(name="joinleave", invoke_without_command=True)
     @commands.has_permissions(manage_guild=True)
     async def jl_prefix(self, ctx: commands.Context):
         await ctx.send(
-            "Pakai salah satu:\n"
+            "Usage:\n"
             f"`{ctx.prefix}joinleave builder <join|leave>`\n"
             f"`{ctx.prefix}joinleave toggle <join|leave> <on|off>`\n"
             f"`{ctx.prefix}joinleave test <join|leave>`"
@@ -109,7 +109,7 @@ class JoinLeave(commands.Cog):
     async def jl_prefix_builder(self, ctx: commands.Context, jl_type: str):
         jl_type = _normalize_type(jl_type)
         if not jl_type:
-            await ctx.send("⚠️ Tipe harus `join` atau `leave`.")
+            await ctx.send("⚠️ Type must be `join` or `leave`.")
             return
         default = DEFAULT_JOIN if jl_type == "join" else DEFAULT_LEAVE
         config = await store.get_path(str(ctx.guild.id), jl_type, default=default)
@@ -126,33 +126,33 @@ class JoinLeave(commands.Cog):
         jl_type = _normalize_type(jl_type)
         enabled = _parse_bool(state)
         if not jl_type or enabled is None:
-            await ctx.send(f"⚠️ Format: `{ctx.prefix}joinleave toggle <join|leave> <on|off>`")
+            await ctx.send(f"⚠️ Usage: `{ctx.prefix}joinleave toggle <join|leave> <on|off>`")
             return
         default = DEFAULT_JOIN if jl_type == "join" else DEFAULT_LEAVE
         config = await store.get_path(str(ctx.guild.id), jl_type, default=default)
         config["enabled"] = enabled
         await store.set_path(str(ctx.guild.id), jl_type, config)
-        status = "diaktifkan ✅" if enabled else "dinonaktifkan ⛔"
-        await ctx.send(f"Notifikasi **{jl_type}** berhasil {status}.")
+        status = "enabled ✅" if enabled else "disabled ⛔"
+        await ctx.send(f"**{jl_type}** notifications have been {status}.")
 
     @jl_prefix.command(name="test")
     @commands.has_permissions(manage_guild=True)
     async def jl_prefix_test(self, ctx: commands.Context, jl_type: str):
         jl_type = _normalize_type(jl_type)
         if not jl_type:
-            await ctx.send("⚠️ Tipe harus `join` atau `leave`.")
+            await ctx.send("⚠️ Type must be `join` or `leave`.")
             return
         default = DEFAULT_JOIN if jl_type == "join" else DEFAULT_LEAVE
         config = await store.get_path(str(ctx.guild.id), jl_type, default=default)
         if not config.get("channel_id"):
-            await ctx.send(f"⚠️ Channel belum diset. Pakai `{ctx.prefix}joinleave builder {jl_type}` dulu.")
+            await ctx.send(f"⚠️ No channel set yet. Use `{ctx.prefix}joinleave builder {jl_type}` first.")
             return
         channel = ctx.guild.get_channel(config["channel_id"])
         if not channel:
-            await ctx.send("⚠️ Channel tidak ditemukan lagi, cek ulang di builder.")
+            await ctx.send("⚠️ That channel no longer exists, check the builder again.")
             return
         await self._dispatch(channel, config, member=ctx.author, guild=ctx.guild)
-        await ctx.send(f"✅ Test embed **{jl_type}** dikirim ke {channel.mention}.")
+        await ctx.send(f"✅ Test **{jl_type}** embed sent to {channel.mention}.")
 
     # =================================================================
     # LISTENERS

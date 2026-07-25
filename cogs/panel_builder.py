@@ -1,7 +1,7 @@
 """
-Panel Builder interaktif untuk embed Join/Leave.
-Konsep: 1 message berisi preview embed (berubah live) + tombol-tombol setting
-di bawahnya, mirip contoh ticket panel builder.
+Interactive Panel Builder for Join/Leave embeds.
+One message holds a live preview embed (updates instantly) plus configuration
+buttons below it, similar to a ticket-panel builder.
 """
 import copy
 import discord
@@ -12,15 +12,15 @@ from utils.variables import VARIABLE_HELP
 DEFAULT_JOIN = {
     "enabled": False,
     "channel_id": None,
-    "content": "👋 Selamat datang {user} di **{server}**!",
-    "title": "👋 Selamat Datang!",
-    "description": "Halo {user}, selamat datang di **{server}**!",
+    "content": "👋 Welcome {user} to **{server}**!",
+    "title": "👋 Welcome!",
+    "description": "Hey {user}, welcome to **{server}**!",
     "thumbnail": "{user_avatar}",
     "banner": None,
     "color": "#8B0000",
     "footer": "",
     "blocks": [
-        {"type": "field", "name": "Member Ke-", "value": "{member_count}", "inline": True}
+        {"type": "field", "name": "Member #", "value": "{member_count}", "inline": True}
     ],
     "row_links": [],
 }
@@ -29,14 +29,14 @@ DEFAULT_LEAVE = {
     "enabled": False,
     "channel_id": None,
     "content": "",
-    "title": "👋 Sampai Jumpa",
-    "description": "**{user_name}** telah meninggalkan **{server}**.",
+    "title": "👋 Goodbye",
+    "description": "**{user_name}** has left **{server}**.",
     "thumbnail": "{user_avatar}",
     "banner": None,
     "color": "#8B0000",
     "footer": "",
     "blocks": [
-        {"type": "field", "name": "Sisa Member", "value": "{member_count}", "inline": True}
+        {"type": "field", "name": "Members Left", "value": "{member_count}", "inline": True}
     ],
     "row_links": [],
 }
@@ -51,7 +51,7 @@ class TitleModal(discord.ui.Modal, title="Set Title"):
         super().__init__()
         self.view_ref = view
         self.title_input = discord.ui.TextInput(
-            label="Judul Embed",
+            label="Embed Title",
             default=(view.config.get("title") or "")[:256],
             max_length=256,
             required=False,
@@ -68,7 +68,7 @@ class DescriptionModal(discord.ui.Modal, title="Set Description"):
         super().__init__()
         self.view_ref = view
         self.desc_input = discord.ui.TextInput(
-            label="Deskripsi Embed",
+            label="Embed Description",
             style=discord.TextStyle.paragraph,
             default=view.config.get("description") or "",
             max_length=4000,
@@ -86,7 +86,7 @@ class ThumbnailModal(discord.ui.Modal, title="Set Thumbnail"):
         super().__init__()
         self.view_ref = view
         self.url_input = discord.ui.TextInput(
-            label="URL gambar (atau ketik {user_avatar})",
+            label="Image URL (or type {user_avatar})",
             default=view.config.get("thumbnail") or "",
             max_length=300,
             required=False,
@@ -103,7 +103,7 @@ class BannerModal(discord.ui.Modal, title="Set Banner"):
         super().__init__()
         self.view_ref = view
         self.url_input = discord.ui.TextInput(
-            label="URL gambar banner",
+            label="Banner image URL",
             default=view.config.get("banner") or "",
             max_length=300,
             required=False,
@@ -115,12 +115,12 @@ class BannerModal(discord.ui.Modal, title="Set Banner"):
         await self.view_ref.save_and_refresh(interaction)
 
 
-class ColorModal(discord.ui.Modal, title="Set Warna Embed"):
+class ColorModal(discord.ui.Modal, title="Set Embed Color"):
     def __init__(self, view: "JoinLeaveBuilderView"):
         super().__init__()
         self.view_ref = view
         self.color_input = discord.ui.TextInput(
-            label="Kode warna hex (contoh: #FFD54A)",
+            label="Hex color code (e.g. #8B0000)",
             default=view.config.get("color", "#8B0000"),
             max_length=7,
         )
@@ -134,29 +134,12 @@ class ColorModal(discord.ui.Modal, title="Set Warna Embed"):
         await self.view_ref.save_and_refresh(interaction)
 
 
-class FooterModal(discord.ui.Modal, title="Set Footer"):
-    def __init__(self, view: "JoinLeaveBuilderView"):
-        super().__init__()
-        self.view_ref = view
-        self.footer_input = discord.ui.TextInput(
-            label="Teks Footer (kosongkan untuk default)",
-            default=view.config.get("footer") or "",
-            max_length=200,
-            required=False,
-        )
-        self.add_item(self.footer_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        self.view_ref.config["footer"] = self.footer_input.value
-        await self.view_ref.save_and_refresh(interaction)
-
-
-class ContentModal(discord.ui.Modal, title="Set Teks Sambutan (di luar embed)"):
+class ContentModal(discord.ui.Modal, title="Set Greeting Text (outside the embed)"):
     def __init__(self, view: "JoinLeaveBuilderView"):
         super().__init__()
         self.view_ref = view
         self.content_input = discord.ui.TextInput(
-            label="Teks di atas embed (bisa mention {user})",
+            label="Text above the embed (e.g. mention {user})",
             style=discord.TextStyle.paragraph,
             default=view.config.get("content") or "",
             max_length=1000,
@@ -169,13 +152,30 @@ class ContentModal(discord.ui.Modal, title="Set Teks Sambutan (di luar embed)"):
         await self.view_ref.save_and_refresh(interaction)
 
 
-class FieldModal(discord.ui.Modal, title="Tambah Field"):
+class FooterModal(discord.ui.Modal, title="Set Footer"):
     def __init__(self, view: "JoinLeaveBuilderView"):
         super().__init__()
         self.view_ref = view
-        self.name_input = discord.ui.TextInput(label="Nama Field", max_length=256)
+        self.footer_input = discord.ui.TextInput(
+            label="Footer text (leave empty for default)",
+            default=view.config.get("footer") or "",
+            max_length=200,
+            required=False,
+        )
+        self.add_item(self.footer_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.view_ref.config["footer"] = self.footer_input.value
+        await self.view_ref.save_and_refresh(interaction)
+
+
+class FieldModal(discord.ui.Modal, title="Add Field"):
+    def __init__(self, view: "JoinLeaveBuilderView"):
+        super().__init__()
+        self.view_ref = view
+        self.name_input = discord.ui.TextInput(label="Field Name", max_length=256)
         self.value_input = discord.ui.TextInput(
-            label="Isi Field", style=discord.TextStyle.paragraph, max_length=1024
+            label="Field Value", style=discord.TextStyle.paragraph, max_length=1024
         )
         self.inline_input = discord.ui.TextInput(label="Inline? (yes/no)", default="no", max_length=3)
         self.add_item(self.name_input)
@@ -193,14 +193,14 @@ class FieldModal(discord.ui.Modal, title="Tambah Field"):
         await self.view_ref.save_and_refresh(interaction)
 
 
-class IconFieldModal(discord.ui.Modal, title="Tambah Icon Field"):
+class IconFieldModal(discord.ui.Modal, title="Add Icon Field"):
     def __init__(self, view: "JoinLeaveBuilderView"):
         super().__init__()
         self.view_ref = view
-        self.icon_input = discord.ui.TextInput(label="Emoji (contoh: 🎉 atau <:nama:id>)", max_length=100)
-        self.name_input = discord.ui.TextInput(label="Nama Field", max_length=256)
+        self.icon_input = discord.ui.TextInput(label="Emoji (e.g. 🎉 or <:name:id>)", max_length=100)
+        self.name_input = discord.ui.TextInput(label="Field Name", max_length=256)
         self.value_input = discord.ui.TextInput(
-            label="Isi Field", style=discord.TextStyle.paragraph, max_length=1024
+            label="Field Value", style=discord.TextStyle.paragraph, max_length=1024
         )
         self.inline_input = discord.ui.TextInput(label="Inline? (yes/no)", default="no", max_length=3)
         self.add_item(self.icon_input)
@@ -220,22 +220,22 @@ class IconFieldModal(discord.ui.Modal, title="Tambah Icon Field"):
         await self.view_ref.save_and_refresh(interaction)
 
 
-class RowLinkModal(discord.ui.Modal, title="Tambah Tombol Link"):
+class RowLinkModal(discord.ui.Modal, title="Add Link Button"):
     def __init__(self, view: "JoinLeaveBuilderView"):
         super().__init__()
         self.view_ref = view
-        self.label_input = discord.ui.TextInput(label="Label Tombol", max_length=80)
-        self.url_input = discord.ui.TextInput(label="URL (harus https://...)", max_length=300)
+        self.label_input = discord.ui.TextInput(label="Button Label", max_length=80)
+        self.url_input = discord.ui.TextInput(label="URL (must start with https://)", max_length=300)
         self.add_item(self.label_input)
         self.add_item(self.url_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         links = self.view_ref.config.setdefault("row_links", [])
         if len(links) >= 5:
-            await interaction.response.send_message("⚠️ Maksimal 5 tombol link.", ephemeral=True)
+            await interaction.response.send_message("⚠️ Maximum of 5 link buttons.", ephemeral=True)
             return
         if not self.url_input.value.startswith("http"):
-            await interaction.response.send_message("⚠️ URL harus diawali http:// atau https://", ephemeral=True)
+            await interaction.response.send_message("⚠️ URL must start with http:// or https://", ephemeral=True)
             return
         links.append({"label": self.label_input.value, "url": self.url_input.value})
         await self.view_ref.save_and_refresh(interaction)
@@ -251,7 +251,7 @@ class BlockRemoveSelect(discord.ui.Select):
         blocks = view.config.get("blocks", [])
         options = []
         if not blocks:
-            options.append(discord.SelectOption(label="Belum ada field / separator", value="none"))
+            options.append(discord.SelectOption(label="No fields/separators yet", value="none"))
         else:
             for i, b in enumerate(blocks):
                 if b["type"] == "separator":
@@ -259,10 +259,10 @@ class BlockRemoveSelect(discord.ui.Select):
                 elif b["type"] == "icon_field":
                     label = f"#{i + 1} — {b.get('icon', '')} {b.get('name', '')}"[:100]
                 else:
-                    label = f"#{i + 1} — {b.get('name', '(tanpa nama)')}"[:100]
+                    label = f"#{i + 1} — {b.get('name', '(no name)')}"[:100]
                 options.append(discord.SelectOption(label=label[:100], value=str(i)))
         super().__init__(
-            placeholder="🗑️ Hapus field / separator...",
+            placeholder="🗑️ Remove a field / separator...",
             options=options[:25],
             row=2,
         )
@@ -283,7 +283,7 @@ class ChannelPickSelect(discord.ui.ChannelSelect):
     def __init__(self, view: "JoinLeaveBuilderView"):
         self.view_ref = view
         super().__init__(
-            placeholder="📌 Set channel notifikasi...",
+            placeholder="📌 Set the notification channel...",
             channel_types=[discord.ChannelType.text, discord.ChannelType.news],
             row=3,
         )
@@ -317,7 +317,7 @@ class JoinLeaveBuilderView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message("⚠️ Panel builder ini bukan punya kamu.", ephemeral=True)
+            await interaction.response.send_message("⚠️ This builder panel isn't yours.", ephemeral=True)
             return False
         return True
 
@@ -334,15 +334,15 @@ class JoinLeaveBuilderView(discord.ui.View):
         return build_joinleave_embed(self.config, member=None, guild=self.guild)
 
     def header_text(self) -> str:
-        status = "✅ Aktif" if self.config.get("enabled") else "⛔ Nonaktif"
-        channel = f"<#{self.config['channel_id']}>" if self.config.get("channel_id") else "*belum diset*"
+        status = "✅ Enabled" if self.config.get("enabled") else "⛔ Disabled"
+        channel = f"<#{self.config['channel_id']}>" if self.config.get("channel_id") else "*not set*"
         links = len(self.config.get("row_links", []))
-        content_preview = self.config.get("content") or "*(kosong)*"
+        content_preview = self.config.get("content") or "*(empty)*"
         return (
-            f"### 🛠️ PANEL BUILDER — NOTIFIKASI {self.jl_type.upper()}\n"
-            f"Status: **{status}**  •  Channel: {channel}  •  Tombol link: {links}/5\n"
-            f"Teks sambutan (di luar embed): {content_preview}\n"
-            f"-# Preview di bawah pakai data contoh — variabel otomatis diganti saat member join/leave beneran."
+            f"### 🛠️ PANEL BUILDER — {self.jl_type.upper()} NOTIFICATION\n"
+            f"Status: **{status}**  •  Channel: {channel}  •  Link buttons: {links}/5\n"
+            f"Greeting text (outside the embed): {content_preview}\n"
+            f"-# The preview below uses sample data — variables are auto-replaced on a real join/leave."
         )
 
     async def save_and_refresh(self, interaction: discord.Interaction):
@@ -399,7 +399,7 @@ class JoinLeaveBuilderView(discord.ui.View):
         await interaction.response.send_message(VARIABLE_HELP, ephemeral=True)
 
     # ---- Row 4 ----
-    @discord.ui.button(label="Sambutan", emoji="💬", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="Greeting", emoji="💬", style=discord.ButtonStyle.secondary, row=4)
     async def btn_content(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ContentModal(self))
 
@@ -422,6 +422,6 @@ class JoinLeaveBuilderView(discord.ui.View):
     async def btn_done(self, interaction: discord.Interaction, button: discord.ui.Button):
         for item in self.children:
             item.disabled = True
-        content = self.header_text() + "\n\n**Panel ditutup. Jalankan `/joinleave builder` lagi kalau mau edit.**"
+        content = self.header_text() + f"\n\n**Builder closed. Run `/joinleave builder` again to edit.**"
         await interaction.response.edit_message(content=content, view=self)
         self.stop()
