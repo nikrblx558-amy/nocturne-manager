@@ -3,11 +3,12 @@ Application System — a full replacement for the old Status Bot feature.
 
 Lets staff build application panels (like a job application / staff
 recruitment form) with a live-preview builder, publish them with a persistent
-"Apply" button, collect answers via a modal, and review submissions with
-Accept/Deny buttons in a log channel.
+"Apply" button, collect answers via a DM conversation (bot asks each question
+one at a time in the user's DMs), and review submissions with Accept/Deny
+buttons in a log channel.
 """
 import re
-import copy
+import asyncio
 from datetime import datetime, timezone
 
 import discord
@@ -19,8 +20,8 @@ from utils.embed_builder import parse_color
 
 store = JSONStore("applications.json")
 
-CHUNK_SIZE = 5          # Discord modals allow a maximum of 5 components per modal
 MAX_QUESTIONS = 25      # Discord embeds allow a maximum of 25 fields, used to display Q&A
+ANSWER_TIMEOUT = 600    # seconds to wait for a reply to each DM question
 
 
 def make_slug(name: str) -> str:
@@ -256,34 +257,6 @@ class AddQuestionModal(discord.ui.Modal, title="Add Question"):
         style = "paragraph" if self.style_input.value.strip().lower().startswith("p") else "short"
         questions.append({"label": self.label_input.value, "style": style})
         await self.view_ref.save_and_refresh(interaction)
-
-
-class ApplyModal(discord.ui.Modal):
-    """One 'page' of the application form. If there are more than 5
-    questions, additional pages are chained automatically after each submit."""
-
-    def __init__(self, guild_id: int, panel_id: str, config: dict, questions_chunk: list, chunk_index: int, total_chunks: int):
-        base_title = config.get("title") or "Application"
-        suffix = f" ({chunk_index + 1}/{total_chunks})" if total_chunks > 1 else ""
-        super().__init__(title=(base_title[:45 - len(suffix)] + suffix)[:45])
-        self.guild_id = guild_id
-        self.panel_id = panel_id
-        self.config = config
-        self.chunk_index = chunk_index
-        self.total_chunks = total_chunks
-        self.question_inputs = []
-        for q in questions_chunk:
-            style = discord.TextStyle.paragraph if q.get("style") == "paragraph" else discord.TextStyle.short
-            text_input = discord.ui.TextInput(label=q["label"][:45], style=style, required=True, max_length=1000)
-            self.question_inputs.append((q["label"], text_input))
-            self.add_item(text_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        cog: "ApplicationSystem" = interaction.client.get_cog("ApplicationSystem")
-        await cog.handle_modal_chunk(
-            interaction, self.guild_id, self.panel_id, self.config,
-            self.question_inputs, self.chunk_index, self.total_chunks,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -524,12 +497,9 @@ class ApplicationBuilderView(discord.ui.View):
 class ApplicationSystem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Short-lived state for multi-page application forms (>5 questions).
-        # Keyed by (guild_id, panel_id, user_id). Only needed for the few
-        # seconds between a user submitting one page and the next page
-        # opening — not meant to survive a bot restart.
-        self.pending_answers: dict = {}
-        self.pending_chunks: dict = {}
+        # Tracks user IDs currently filling out an application via DM, so we
+        # can block a second concurrent Apply click while one is in progress.
+        self.active_applications: set = set()
 
     app_group = app_commands.Group(name="application", description="Create & manage application panels")
 
@@ -685,70 +655,87 @@ class ApplicationSystem(commands.Cog):
             await interaction.response.send_message("⚠️ This panel has no questions configured.", ephemeral=True)
             return
 
-        chunks = [questions[i:i + CHUNK_SIZE] for i in range(0, len(questions), CHUNK_SIZE)]
-        key = (guild_id, panel_id, str(interaction.user.id))
-        self.pending_answers[key] = []
-        self.pending_chunks[key] = chunks
-
-        await interaction.response.send_modal(
-            ApplyModal(int(guild_id), panel_id, config, chunks[0], 0, len(chunks))
-        )
-
-    async def handle_modal_chunk(self, interaction: discord.Interaction, guild_id: int, panel_id: str, config: dict, question_inputs, chunk_index: int, total_chunks: int):
-        key = (str(guild_id), panel_id, str(interaction.user.id))
-        answers = self.pending_answers.setdefault(key, [])
-        answers.extend([(label, ti.value) for label, ti in question_inputs])
-
-        next_index = chunk_index + 1
-        if next_index < total_chunks:
-            chunks = self.pending_chunks.get(key, [])
-            if next_index >= len(chunks):
-                # Safety net: pending state got lost (e.g. bot restarted mid-form).
-                await interaction.response.send_message(
-                    "⚠️ Something went wrong continuing your application. Please click Apply again to restart the form.",
-                    ephemeral=True,
-                )
-                self.pending_answers.pop(key, None)
-                self.pending_chunks.pop(key, None)
-                return
-            await interaction.response.send_modal(
-                ApplyModal(guild_id, panel_id, config, chunks[next_index], next_index, total_chunks)
+        if interaction.user.id in self.active_applications:
+            await interaction.response.send_message(
+                "⚠️ You already have an application in progress. Check your DMs!", ephemeral=True
             )
             return
 
-        # Last page submitted — finalize and send to the log channel.
-        final_answers = self.pending_answers.pop(key, answers)
-        self.pending_chunks.pop(key, None)
-        await self.finalize_submission(interaction, guild_id, panel_id, config, final_answers)
+        try:
+            dm_channel = await interaction.user.create_dm()
+            await dm_channel.send(
+                f"📋 **{config.get('title', 'Application')}**\n"
+                f"{config.get('description', '')}\n\n"
+                f"I'll ask you {len(questions)} question(s) one at a time — just reply here in DMs.\n"
+                f"Type `cancel` anytime to stop."
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "⚠️ I couldn't DM you. Please enable **Allow direct messages from server members** "
+                "in your Privacy Settings for this server, then click Apply again.",
+                ephemeral=True,
+            )
+            return
 
-    async def finalize_submission(self, interaction: discord.Interaction, guild_id: int, panel_id: str, config: dict, answers: list):
+        await interaction.response.send_message("📬 Check your DMs — I've sent you the application form!", ephemeral=True)
+
+        guild = interaction.guild
+        user = interaction.user
+        self.active_applications.add(user.id)
+        try:
+            answers = []
+            for i, question in enumerate(questions, start=1):
+                await dm_channel.send(f"**Question {i}/{len(questions)}:** {question['label']}")
+
+                def check(message: discord.Message, _channel_id=dm_channel.id, _user_id=user.id):
+                    return message.author.id == _user_id and message.channel.id == _channel_id
+
+                try:
+                    reply = await self.bot.wait_for("message", check=check, timeout=ANSWER_TIMEOUT)
+                except asyncio.TimeoutError:
+                    await dm_channel.send("⌛ You took too long to respond. Click Apply again to restart the form.")
+                    return
+
+                if reply.content.strip().lower() == "cancel":
+                    await dm_channel.send("❌ Application cancelled.")
+                    return
+
+                answers.append((question["label"], reply.content))
+
+            await dm_channel.send("✅ Thanks! Your application has been submitted for review.")
+            await self.finalize_submission(guild, user, guild_id, panel_id, config, answers)
+        finally:
+            self.active_applications.discard(user.id)
+
+    async def finalize_submission(self, guild: discord.Guild, user: discord.abc.User, guild_id, panel_id: str, config: dict, answers: list):
         panels = await store.get_path(str(guild_id), "panels", default={})
         fresh_config = panels.get(panel_id, config)
         log_channel_id = fresh_config.get("log_channel_id")
-        channel = interaction.guild.get_channel(log_channel_id) if log_channel_id else None
+        channel = guild.get_channel(log_channel_id) if log_channel_id else None
         if not channel:
-            await interaction.response.send_message(
-                "⚠️ This panel has no valid log channel configured. Please contact a server admin.", ephemeral=True
-            )
+            try:
+                await user.send(
+                    "⚠️ Your application couldn't be delivered because this panel's log channel is no longer "
+                    "configured. Please contact a server admin."
+                )
+            except discord.Forbidden:
+                pass
             return
 
         embed = discord.Embed(
             title=f"📥 New Application — {fresh_config.get('title', 'Application')}",
-            description=f"Applicant: {interaction.user.mention} (`{interaction.user.id}`)",
+            description=f"Applicant: {user.mention} (`{user.id}`)",
             color=discord.Color(parse_color(fresh_config.get("color"))),
             timestamp=datetime.now(timezone.utc),
         )
         for label, value in answers[:25]:
             embed.add_field(name=label[:256], value=(value or "-")[:1024], inline=False)
         embed.set_footer(text="Nocturne Manager • Application System")
-        if interaction.user.display_avatar:
-            embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        if user.display_avatar:
+            embed.set_thumbnail(url=user.display_avatar.url)
 
-        decision_view = build_decision_view(guild_id, panel_id, interaction.user.id)
+        decision_view = build_decision_view(guild_id, panel_id, user.id)
         await channel.send(embed=embed, view=decision_view)
-        await interaction.response.send_message(
-            "✅ Your application has been submitted! You'll be notified once it's reviewed.", ephemeral=True
-        )
 
     async def _handle_decision(self, interaction: discord.Interaction, custom_id: str):
         _, _, guild_id, panel_id, applicant_id, action = custom_id.split(":")
