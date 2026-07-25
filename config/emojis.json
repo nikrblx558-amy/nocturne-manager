@@ -1,10 +1,10 @@
 {
   "_readme": "Ganti value di bawah dengan emoji custom server lu, format: <:nama_emoji:ID_EMOJI> atau <a:nama_emoji:ID_EMOJI> untuk emoji animasi. Kalau belum ada emoji custom, biarkan pakai emoji unicode default di bawah ini.",
 
-  "status_online": "🟢",
-  "status_maintenance": "🛠️",
-  "status_update": "🔄",
-  "status_offline": "🔴",
+  "status_online": "<a:Status:1529931214054752427>",
+  "status_maintenance": "<:yellow_status:1529931730935611526>",
+  "status_update": "<a:Loading:1529932224655527948>",
+  "status_offline": "<a:Offline:1529931159549776132>",
 
-  "separator": "▬"
+  "separator": "—"
 }
