@@ -5,6 +5,7 @@ from discord.ext import commands
 from utils.storage import JSONStore
 from utils.embed_builder import build_joinleave_embed, build_row_link_view, resolve_content
 from cogs.panel_builder import JoinLeaveBuilderView, DEFAULT_JOIN, DEFAULT_LEAVE
+from cogs.premium import get_limits
 
 store = JSONStore("joinleave.json")
 
@@ -47,6 +48,7 @@ class JoinLeave(commands.Cog):
     async def builder(self, interaction: discord.Interaction, type: app_commands.Choice[str]):
         default = DEFAULT_JOIN if type.value == "join" else DEFAULT_LEAVE
         config = await store.get_path(str(interaction.guild_id), type.value, default=default)
+        limits = await get_limits(interaction.guild_id)
 
         view = JoinLeaveBuilderView(
             store=store,
@@ -54,6 +56,8 @@ class JoinLeave(commands.Cog):
             jl_type=type.value,
             config=config,
             author_id=interaction.user.id,
+            max_row_links=limits["max_row_links"],
+            is_premium=limits["premium"],
         )
         await interaction.response.send_message(
             content=view.header_text(),
@@ -113,9 +117,11 @@ class JoinLeave(commands.Cog):
             return
         default = DEFAULT_JOIN if jl_type == "join" else DEFAULT_LEAVE
         config = await store.get_path(str(ctx.guild.id), jl_type, default=default)
+        limits = await get_limits(ctx.guild.id)
 
         view = JoinLeaveBuilderView(
-            store=store, guild=ctx.guild, jl_type=jl_type, config=config, author_id=ctx.author.id
+            store=store, guild=ctx.guild, jl_type=jl_type, config=config, author_id=ctx.author.id,
+            max_row_links=limits["max_row_links"], is_premium=limits["premium"],
         )
         message = await ctx.send(content=view.header_text(), embed=view.render_embed(), view=view)
         view.message = message
