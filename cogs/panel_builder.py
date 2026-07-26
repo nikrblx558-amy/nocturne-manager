@@ -8,6 +8,7 @@ import discord
 
 from utils.embed_builder import build_joinleave_embed
 from utils.variables import VARIABLE_HELP
+from cogs.premium import get_limits
 
 DEFAULT_JOIN = {
     "enabled": False,
@@ -231,8 +232,12 @@ class RowLinkModal(discord.ui.Modal, title="Add Link Button"):
 
     async def on_submit(self, interaction: discord.Interaction):
         links = self.view_ref.config.setdefault("row_links", [])
-        if len(links) >= 5:
-            await interaction.response.send_message("⚠️ Maximum of 5 link buttons.", ephemeral=True)
+        limits = await get_limits(interaction.guild_id)
+        if len(links) >= limits["max_row_links"]:
+            upsell = "" if limits["premium"] else " Upgrade to Premium for more link buttons."
+            await interaction.response.send_message(
+                f"⚠️ This server's plan allows up to {limits['max_row_links']} link button(s).{upsell}", ephemeral=True
+            )
             return
         if not self.url_input.value.startswith("http"):
             await interaction.response.send_message("⚠️ URL must start with http:// or https://", ephemeral=True)
@@ -298,13 +303,15 @@ class ChannelPickSelect(discord.ui.ChannelSelect):
 # ---------------------------------------------------------------------------
 
 class JoinLeaveBuilderView(discord.ui.View):
-    def __init__(self, store, guild: discord.Guild, jl_type: str, config: dict, author_id: int):
+    def __init__(self, store, guild: discord.Guild, jl_type: str, config: dict, author_id: int, max_row_links: int = 5, is_premium: bool = False):
         super().__init__(timeout=600)
         self.store = store
         self.guild = guild
         self.jl_type = jl_type
         self.config = config
         self.author_id = author_id
+        self.max_row_links = max_row_links
+        self.is_premium = is_premium
         self.message: discord.Message | None = None
         self._build_dynamic_items()
 
@@ -338,9 +345,10 @@ class JoinLeaveBuilderView(discord.ui.View):
         channel = f"<#{self.config['channel_id']}>" if self.config.get("channel_id") else "*not set*"
         links = len(self.config.get("row_links", []))
         content_preview = self.config.get("content") or "*(empty)*"
+        plan = "💎 Premium" if self.is_premium else "🆓 Free"
         return (
             f"### 🛠️ PANEL BUILDER — {self.jl_type.upper()} NOTIFICATION\n"
-            f"Status: **{status}**  •  Channel: {channel}  •  Link buttons: {links}/5\n"
+            f"Plan: {plan}  •  Status: **{status}**  •  Channel: {channel}  •  Link buttons: {links}/{self.max_row_links}\n"
             f"Greeting text (outside the embed): {content_preview}\n"
             f"-# The preview below uses sample data — variables are auto-replaced on a real join/leave."
         )
