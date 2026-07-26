@@ -1,0 +1,7 @@
+{
+  "_readme": "Custom emojis for the /help panel (dropdown options + section headers). Replace any value with your own server's custom emoji format <:name:id> (or <a:name:id> for animated) if you want. Defaults below are plain unicode emojis and work fine as-is.",
+
+  "help_overview": "🏠",
+  "help_joinleave": "📥",
+  "help_application": "📝"
+}
