@@ -8,7 +8,6 @@ one at a time in the user's DMs), and review submissions with Accept/Deny
 buttons in a log channel.
 """
 import re
-import os
 import asyncio
 from datetime import datetime, timezone
 
@@ -18,12 +17,8 @@ from discord.ext import commands
 
 from utils.storage import JSONStore
 from utils.embed_builder import parse_color
-
-# Branding links shown to applicants after they finish a DM application.
-# Set these as environment variables — leave empty to hide that part.
-BOT_INVITE_URL = os.getenv("BOT_INVITE_URL")
-SUPPORT_SERVER_URL = os.getenv("SUPPORT_SERVER_URL")
-BOT_BANNER_URL = os.getenv("BOT_BANNER_URL")
+from utils.branding import BOT_INVITE_URL, SUPPORT_SERVER_URL, BOT_BANNER_URL
+from cogs.premium import get_limits, PREMIUM_MAX_QUESTIONS
 
 store = JSONStore("applications.json")
 
@@ -256,10 +251,13 @@ class AddQuestionModal(discord.ui.Modal, title="Add Question"):
 
     async def on_submit(self, interaction: discord.Interaction):
         questions = self.view_ref.config.setdefault("questions", [])
-        if len(questions) >= MAX_QUESTIONS:
-            await interaction.response.send_message(
-                f"⚠️ Maximum of {MAX_QUESTIONS} questions (Discord embed field limit).", ephemeral=True
-            )
+        limit = self.view_ref.max_questions
+        if len(questions) >= limit:
+            if self.view_ref.is_premium:
+                msg = f"⚠️ Maximum of {limit} questions (Discord embed field limit)."
+            else:
+                msg = f"⚠️ The Free plan allows up to {limit} questions. Upgrade to Premium for up to {PREMIUM_MAX_QUESTIONS}."
+            await interaction.response.send_message(msg, ephemeral=True)
             return
         style = "paragraph" if self.style_input.value.strip().lower().startswith("p") else "short"
         questions.append({"label": self.label_input.value, "style": style})
@@ -372,13 +370,15 @@ class PublishChannelPickView(discord.ui.View):
 # ---------------------------------------------------------------------------
 
 class ApplicationBuilderView(discord.ui.View):
-    def __init__(self, store: JSONStore, guild: discord.Guild, panel_id: str, config: dict, author_id: int):
+    def __init__(self, store: JSONStore, guild: discord.Guild, panel_id: str, config: dict, author_id: int, max_questions: int = None, is_premium: bool = False):
         super().__init__(timeout=600)
         self.store = store
         self.guild = guild
         self.panel_id = panel_id
         self.config = config
         self.author_id = author_id
+        self.max_questions = max_questions or MAX_QUESTIONS
+        self.is_premium = is_premium
         self.message: discord.Message | None = None
         self._build_dynamic_items()
 
@@ -411,9 +411,10 @@ class ApplicationBuilderView(discord.ui.View):
         log_channel = f"<#{self.config['log_channel_id']}>" if self.config.get("log_channel_id") else "*not set*"
         published = f"<#{self.config['post_channel_id']}>" if self.config.get("post_channel_id") else "*not published yet*"
         q_count = len(self.config.get("questions", []))
+        plan = "💎 Premium" if self.is_premium else "🆓 Free"
         return (
             f"### 🛠️ APPLICATION PANEL BUILDER — {self.config.get('name', self.panel_id)}\n"
-            f"Log channel: {log_channel}  •  Questions: {q_count}/{MAX_QUESTIONS}  •  Published in: {published}\n"
+            f"Plan: {plan}  •  Log channel: {log_channel}  •  Questions: {q_count}/{self.max_questions}  •  Published in: {published}\n"
             f"-# This is a live preview of the panel embed. Use Publish once you're happy with it."
         )
 
@@ -525,6 +526,14 @@ class ApplicationSystem(commands.Cog):
     @app_commands.checks.has_permissions(manage_guild=True)
     async def new_panel(self, interaction: discord.Interaction, name: str):
         panels = await store.get_path(str(interaction.guild_id), "panels", default={})
+        limits = await get_limits(interaction.guild_id)
+        if len(panels) >= limits["max_panels"]:
+            upsell = "" if limits["premium"] else " Upgrade to Premium for more panels."
+            await interaction.response.send_message(
+                f"⚠️ This server's plan allows up to {limits['max_panels']} application panel(s).{upsell}",
+                ephemeral=True,
+            )
+            return
         slug = make_slug(name)
         base_slug, counter = slug, 2
         while slug in panels:
@@ -546,7 +555,11 @@ class ApplicationSystem(commands.Cog):
         if panel not in panels:
             await interaction.response.send_message("⚠️ Panel not found. Check `/application list`.", ephemeral=True)
             return
-        view = ApplicationBuilderView(store, interaction.guild, panel, panels[panel], interaction.user.id)
+        limits = await get_limits(interaction.guild_id)
+        view = ApplicationBuilderView(
+            store, interaction.guild, panel, panels[panel], interaction.user.id,
+            max_questions=limits["max_questions"], is_premium=limits["premium"],
+        )
         await interaction.response.send_message(
             content=view.header_text(), embed=view.render_embed(), view=view, ephemeral=True
         )
@@ -596,6 +609,11 @@ class ApplicationSystem(commands.Cog):
     @commands.has_permissions(manage_guild=True)
     async def app_prefix_new(self, ctx: commands.Context, *, name: str):
         panels = await store.get_path(str(ctx.guild.id), "panels", default={})
+        limits = await get_limits(ctx.guild.id)
+        if len(panels) >= limits["max_panels"]:
+            upsell = "" if limits["premium"] else " Upgrade to Premium for more panels."
+            await ctx.send(f"⚠️ This server's plan allows up to {limits['max_panels']} application panel(s).{upsell}")
+            return
         slug = make_slug(name)
         base_slug, counter = slug, 2
         while slug in panels:
@@ -612,7 +630,11 @@ class ApplicationSystem(commands.Cog):
         if slug not in panels:
             await ctx.send(f"⚠️ Panel not found. Check `{ctx.prefix}application list`.")
             return
-        view = ApplicationBuilderView(store, ctx.guild, slug, panels[slug], ctx.author.id)
+        limits = await get_limits(ctx.guild.id)
+        view = ApplicationBuilderView(
+            store, ctx.guild, slug, panels[slug], ctx.author.id,
+            max_questions=limits["max_questions"], is_premium=limits["premium"],
+        )
         message = await ctx.send(content=view.header_text(), embed=view.render_embed(), view=view)
         view.message = message
 
@@ -721,7 +743,15 @@ class ApplicationSystem(commands.Cog):
         bot_user = self.bot.user
         embed = discord.Embed(
             title=bot_user.name,
-            description="Want **Nocturne Manager** in your own server too? Check the links below!",
+            description=(
+                "**Nocturne Manager** is an all-in-one Discord bot built for growing communities — from slick "
+                "join/leave announcements to a full staff application system with a live-preview builder, "
+                "just like the one you used above.\n\n"
+                "✅ Custom join/leave embeds with your own branding\n"
+                "✅ Multiple application panels with custom questions\n"
+                "✅ Built-in Accept/Deny review workflow\n\n"
+                "Enjoyed the experience? Bring **Nocturne Manager** to your own server using the links below!"
+            ),
             color=discord.Color(parse_color(None)),
         )
         embed.set_thumbnail(url=bot_user.display_avatar.url)
