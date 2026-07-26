@@ -42,7 +42,7 @@ class NocturneManager(commands.Bot):
         super().__init__(command_prefix=commands.when_mentioned_or(PREFIX), intents=intents, help_command=None)
 
     async def setup_hook(self):
-        for ext in ("cogs.joinleave", "cogs.application"):
+        for ext in ("cogs.premium", "cogs.joinleave", "cogs.application", "cogs.help"):
             await self.load_extension(ext)
             logger.info("Loaded extension: %s", ext)
 
