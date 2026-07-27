@@ -21,6 +21,7 @@ from utils.branding import BOT_INVITE_URL, SUPPORT_SERVER_URL, BOT_BANNER_URL
 from cogs.premium import get_limits, PREMIUM_MAX_QUESTIONS
 
 store = JSONStore("applications.json")
+history_store = JSONStore("submissions.json")
 
 MAX_QUESTIONS = 25      # Discord embeds allow a maximum of 25 fields, used to display Q&A
 ANSWER_TIMEOUT = 600    # seconds to wait for a reply to each DM question
@@ -84,27 +85,67 @@ def build_apply_view(guild_id: int, panel_id: str, config: dict) -> discord.ui.V
     return view
 
 
-def build_decision_view(guild_id: int, panel_id: str, applicant_id: int, disabled: bool = False) -> discord.ui.View:
+def build_decision_view(
+    guild_id: int, panel_id: str, applicant_id: int, message_id: int,
+    jump_url: str = None, decided: bool = False,
+) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
-    view.add_item(
-        discord.ui.Button(
-            label="Accept",
-            emoji="✅",
-            style=discord.ButtonStyle.success,
-            custom_id=f"napp:decision:{guild_id}:{panel_id}:{applicant_id}:accept",
-            disabled=disabled,
-        )
-    )
-    view.add_item(
-        discord.ui.Button(
-            label="Deny",
-            emoji="❌",
-            style=discord.ButtonStyle.danger,
-            custom_id=f"napp:decision:{guild_id}:{panel_id}:{applicant_id}:deny",
-            disabled=disabled,
-        )
-    )
+    base = f"napp:decision:{guild_id}:{panel_id}:{applicant_id}"
+
+    # Row 0 — the actual decision actions. Disabled once a decision is made.
+    view.add_item(discord.ui.Button(
+        label="Accept", style=discord.ButtonStyle.success,
+        custom_id=f"{base}:accept:{message_id}", disabled=decided, row=0,
+    ))
+    view.add_item(discord.ui.Button(
+        label="Deny", style=discord.ButtonStyle.danger,
+        custom_id=f"{base}:deny:{message_id}", disabled=decided, row=0,
+    ))
+    view.add_item(discord.ui.Button(
+        label="Accept with reason", style=discord.ButtonStyle.success,
+        custom_id=f"{base}:accept_reason:{message_id}", disabled=decided, row=0,
+    ))
+    view.add_item(discord.ui.Button(
+        label="Deny with reason", style=discord.ButtonStyle.danger,
+        custom_id=f"{base}:deny_reason:{message_id}", disabled=decided, row=0,
+    ))
+
+    # Row 1 — utility actions, stay enabled even after a decision is made.
+    view.add_item(discord.ui.Button(
+        label="History", style=discord.ButtonStyle.primary,
+        custom_id=f"napp:history:{guild_id}:{applicant_id}", row=1,
+    ))
+    view.add_item(discord.ui.Button(
+        label="Open Ticket with User", style=discord.ButtonStyle.secondary,
+        custom_id=f"napp:ticket:{guild_id}:{applicant_id}", row=1,
+    ))
+    if jump_url:
+        view.add_item(discord.ui.Button(label="Jump to Message", style=discord.ButtonStyle.link, url=jump_url, row=1))
+
     return view
+
+
+class ReasonModal(discord.ui.Modal):
+    """Opened when staff clicks 'Accept with reason' / 'Deny with reason'."""
+
+    def __init__(self, guild_id: str, panel_id: str, applicant_id: str, message_id: str, action: str):
+        super().__init__(title="Accept with Reason" if action == "accept" else "Deny with Reason")
+        self.guild_id = guild_id
+        self.panel_id = panel_id
+        self.applicant_id = applicant_id
+        self.message_id = message_id
+        self.action = action
+        self.reason_input = discord.ui.TextInput(
+            label="Reason", style=discord.TextStyle.paragraph, max_length=500, required=True
+        )
+        self.add_item(self.reason_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cog: "ApplicationSystem" = interaction.client.get_cog("ApplicationSystem")
+        await cog.apply_decision(
+            interaction, self.guild_id, self.panel_id, self.applicant_id,
+            self.message_id, self.action, reason=self.reason_input.value,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +712,10 @@ class ApplicationSystem(commands.Cog):
             await self._handle_apply(interaction, custom_id)
         elif custom_id.startswith("napp:decision:"):
             await self._handle_decision(interaction, custom_id)
+        elif custom_id.startswith("napp:history:"):
+            await self._handle_history(interaction, custom_id)
+        elif custom_id.startswith("napp:ticket:"):
+            await self._handle_ticket(interaction, custom_id)
 
     async def _handle_apply(self, interaction: discord.Interaction, custom_id: str):
         _, _, guild_id, panel_id = custom_id.split(":")
@@ -800,40 +845,166 @@ class ApplicationSystem(commands.Cog):
         if user.display_avatar:
             embed.set_thumbnail(url=user.display_avatar.url)
 
-        decision_view = build_decision_view(guild_id, panel_id, user.id)
-        await channel.send(embed=embed, view=decision_view)
+        # Send first WITHOUT the view, since the buttons need this message's
+        # own ID baked into their custom_id — then attach the view right after.
+        message = await channel.send(embed=embed)
+        decision_view = build_decision_view(guild_id, panel_id, user.id, message.id, jump_url=message.jump_url)
+        await message.edit(view=decision_view)
+
+        records = await history_store.get_path(str(guild_id), str(user.id), default=[])
+        records.append({
+            "panel_id": panel_id,
+            "panel_title": fresh_config.get("title", "Application"),
+            "status": "pending",
+            "reviewer_id": None,
+            "reason": None,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "message_id": message.id,
+            "channel_id": channel.id,
+        })
+        await history_store.set_path(str(guild_id), str(user.id), records)
 
     async def _handle_decision(self, interaction: discord.Interaction, custom_id: str):
-        _, _, guild_id, panel_id, applicant_id, action = custom_id.split(":")
+        _, _, guild_id, panel_id, applicant_id, action, message_id = custom_id.split(":")
 
         if not interaction.user.guild_permissions.manage_guild:
             await interaction.response.send_message("❌ You don't have permission to review applications.", ephemeral=True)
             return
 
-        panels = await store.get_path(guild_id, "panels", default={})
+        if action in ("accept_reason", "deny_reason"):
+            base_action = "accept" if action == "accept_reason" else "deny"
+            await interaction.response.send_modal(ReasonModal(guild_id, panel_id, applicant_id, message_id, base_action))
+            return
+
+        await self.apply_decision(interaction, guild_id, panel_id, applicant_id, message_id, action)
+
+    async def apply_decision(self, interaction: discord.Interaction, guild_id, panel_id: str, applicant_id, message_id, action: str, reason: str = None):
+        """Shared by the plain Accept/Deny buttons AND the Accept/Deny-with-reason
+        modal submit. `interaction.message` is only populated for a direct
+        button click — for a modal submit we have to fetch the message ourselves."""
+        accepted = action == "accept"
+
+        panels = await store.get_path(str(guild_id), "panels", default={})
         config = panels.get(panel_id, {})
         panel_title = config.get("title", "Application")
 
-        embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
-        accepted = action == "accept"
-        embed.color = discord.Color.green() if accepted else discord.Color.red()
-        embed.add_field(
-            name="Status",
-            value=f"{'✅ Accepted' if accepted else '❌ Denied'} by {interaction.user.mention}",
-            inline=False,
-        )
+        source_message = interaction.message
+        if source_message is None:
+            try:
+                source_message = await interaction.channel.fetch_message(int(message_id))
+            except discord.HTTPException:
+                source_message = None
 
-        disabled_view = build_decision_view(guild_id, panel_id, int(applicant_id), disabled=True)
-        await interaction.response.edit_message(embed=embed, view=disabled_view)
+        embed = source_message.embeds[0] if source_message and source_message.embeds else discord.Embed()
+        embed.color = discord.Color.green() if accepted else discord.Color.red()
+        status_line = f"{'✅ Accepted' if accepted else '❌ Denied'} by {interaction.user.mention}"
+        if reason:
+            status_line += f"\n**Reason:** {reason}"
+        embed.add_field(name="Status", value=status_line, inline=False)
+
+        jump_url = source_message.jump_url if source_message else None
+        disabled_view = build_decision_view(guild_id, panel_id, int(applicant_id), int(message_id), jump_url=jump_url, decided=True)
+
+        if interaction.message is not None:
+            # Came straight from the button — this interaction IS the message.
+            await interaction.response.edit_message(embed=embed, view=disabled_view)
+        else:
+            # Came from the reason modal — need to defer + edit the fetched message separately.
+            await interaction.response.defer(ephemeral=True)
+            if source_message is not None:
+                await source_message.edit(embed=embed, view=disabled_view)
+            await interaction.followup.send("✅ Decision recorded.", ephemeral=True)
+
+        await self._update_submission_status(
+            guild_id, applicant_id, message_id,
+            "accepted" if accepted else "denied", interaction.user.id, reason,
+        )
 
         try:
             applicant = interaction.guild.get_member(int(applicant_id)) or await self.bot.fetch_user(int(applicant_id))
             result_text = "accepted ✅" if accepted else "denied ❌"
-            await applicant.send(
-                f"Your application for **{panel_title}** in **{interaction.guild.name}** has been {result_text}."
-            )
+            dm_text = f"Your application for **{panel_title}** in **{interaction.guild.name}** has been {result_text}."
+            if reason:
+                dm_text += f"\n**Reason:** {reason}"
+            await applicant.send(dm_text)
         except (discord.Forbidden, discord.HTTPException, AttributeError):
             pass
+
+    async def _update_submission_status(self, guild_id, applicant_id, message_id, status: str, reviewer_id: int, reason: str = None):
+        records = await history_store.get_path(str(guild_id), str(applicant_id), default=[])
+        for rec in records:
+            if str(rec.get("message_id")) == str(message_id):
+                rec["status"] = status
+                rec["reviewer_id"] = reviewer_id
+                rec["reason"] = reason
+                break
+        await history_store.set_path(str(guild_id), str(applicant_id), records)
+
+    async def _handle_history(self, interaction: discord.Interaction, custom_id: str):
+        _, _, guild_id, applicant_id = custom_id.split(":")
+
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("❌ You don't have permission to view application history.", ephemeral=True)
+            return
+
+        records = await history_store.get_path(guild_id, applicant_id, default=[])
+        if not records:
+            await interaction.response.send_message("No application history found for this user.", ephemeral=True)
+            return
+
+        status_icons = {"pending": "⏳", "accepted": "✅", "denied": "❌"}
+        lines = []
+        for rec in records[-10:]:
+            icon = status_icons.get(rec.get("status"), "❔")
+            date_str = (rec.get("timestamp") or "")[:10]
+            line = f"{icon} **{rec.get('panel_title', 'Application')}** — {rec.get('status', 'unknown')} ({date_str})"
+            if rec.get("reason"):
+                line += f"\n   ↳ *{rec['reason']}*"
+            lines.append(line)
+
+        embed = discord.Embed(
+            title="📜 Application History",
+            description="\n".join(lines),
+            color=discord.Color(0x8B0000),
+        )
+        embed.set_footer(text=f"Showing last {len(lines)} submission(s) in this server")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _handle_ticket(self, interaction: discord.Interaction, custom_id: str):
+        _, _, guild_id, applicant_id = custom_id.split(":")
+
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("❌ You don't have permission to open tickets.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        applicant = guild.get_member(int(applicant_id))
+        if not applicant:
+            await interaction.followup.send("⚠️ That user is no longer in this server.", ephemeral=True)
+            return
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            applicant: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        }
+        if guild.me:
+            overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+        channel_name = f"ticket-{applicant.name}"[:90].lower().replace(" ", "-")
+        try:
+            ticket_channel = await guild.create_text_channel(
+                name=channel_name,
+                overwrites=overwrites,
+                reason=f"Application ticket opened by {interaction.user} for {applicant}",
+            )
+        except discord.Forbidden:
+            await interaction.followup.send("❌ I don't have permission to create channels in this server.", ephemeral=True)
+            return
+
+        await ticket_channel.send(f"{applicant.mention} {interaction.user.mention}\nThis ticket was opened to discuss your application.")
+        await interaction.followup.send(f"✅ Ticket created: {ticket_channel.mention}", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
