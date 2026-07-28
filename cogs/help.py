@@ -52,6 +52,21 @@ CATEGORIES = {
             (f"{PREFIX}application delete <slug>", "Prefix version of delete."),
         ],
     },
+    "tickets": {
+        "label": "Tickets",
+        "emoji_key": "help_tickets",
+        "description": "Multi-category support tickets with a live-preview builder — Claim, Close, Add/Remove User, Transcript, and more.",
+        "commands": [
+            ("/ticket new", "Create a new ticket panel."),
+            ("/ticket builder", "Open the live-preview builder — add categories, set roles/channels, and publish it."),
+            ("/ticket list", "List all ticket panels in this server."),
+            ("/ticket delete", "Delete a ticket panel."),
+            (f"{PREFIX}ticket new <name>", "Prefix version of new."),
+            (f"{PREFIX}ticket builder <slug>", "Prefix version of builder."),
+            (f"{PREFIX}ticket list", "Prefix version of list."),
+            (f"{PREFIX}ticket delete <slug>", "Prefix version of delete."),
+        ],
+    },
 }
 
 
@@ -62,12 +77,14 @@ def build_help_embed(bot: discord.Client, category: str = "overview") -> discord
     if category == "overview" or category not in CATEGORIES:
         jl_emoji = emojis.get("help_joinleave", "📥")
         app_emoji = emojis.get("help_application", "📝")
+        tick_emoji = emojis.get("help_tickets", "🎫")
         embed = discord.Embed(
             title=bot.user.name,
             description=(
                 f"Hey! I'm **{bot.user.name}** — here to help manage your server.\n\n"
                 f"{jl_emoji} **Join & Leave** — custom embeds for members joining/leaving\n"
-                f"{app_emoji} **Applications** — build application panels with a live-preview builder\n\n"
+                f"{app_emoji} **Applications** — build application panels with a live-preview builder\n"
+                f"{tick_emoji} **Tickets** — multi-category support tickets with a live-preview builder\n\n"
                 f"Use the dropdown below to see detailed commands for each category.\n"
                 f"My prefix is `{PREFIX}` — slash commands (`/...`) always work too."
             ),
