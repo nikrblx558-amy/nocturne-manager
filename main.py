@@ -6,12 +6,13 @@ and an Application System (staff applications, whitelist forms, etc.) — also
 with a live-preview panel builder.
 """
 import asyncio
+import itertools
 import logging
 import os
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -36,13 +37,25 @@ intents.message_content = True  # REQUIRED for prefix commands to read message t
 # the bot and prefix commands (n!...) will never trigger, even though slash
 # commands keep working fine.
 
+# Rotating presence — cycles every 15s so the bot's status never looks static.
+# Add/remove/reword entries here freely; nothing else needs to change.
+PRESENCES = [
+    (discord.ActivityType.watching, "over your community"),
+    (discord.ActivityType.watching, "applications & new members"),
+    (discord.ActivityType.listening, "whispers in the dark"),
+    (discord.ActivityType.playing, "among shadows and secrets"),
+    (discord.ActivityType.watching, "the gates of your server"),
+    (discord.ActivityType.competing, "the night watch"),
+]
+PRESENCE_INTERVAL_SECONDS = 15
+
 
 class NocturneManager(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix=commands.when_mentioned_or(PREFIX), intents=intents, help_command=None)
 
     async def setup_hook(self):
-        for ext in ("cogs.premium", "cogs.joinleave", "cogs.application", "cogs.help"):
+        for ext in ("cogs.premium", "cogs.joinleave", "cogs.application", "cogs.tickets", "cogs.help"):
             await self.load_extension(ext)
             logger.info("Loaded extension: %s", ext)
 
@@ -69,12 +82,19 @@ class NocturneManager(commands.Bot):
     async def on_ready(self):
         logger.info("Logged in as %s (ID: %s)", self.user, self.user.id)
         logger.info("Prefix commands active with prefix: '%s' (message_content intent: %s)", PREFIX, intents.message_content)
-        await self.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.watching, name="applications & new members")
-        )
+        if not rotate_presence.is_running():
+            rotate_presence.start()
 
 
 bot = NocturneManager()
+
+_presence_cycle = itertools.cycle(PRESENCES)
+
+
+@tasks.loop(seconds=PRESENCE_INTERVAL_SECONDS)
+async def rotate_presence():
+    activity_type, name = next(_presence_cycle)
+    await bot.change_presence(activity=discord.Activity(type=activity_type, name=name))
 
 
 @bot.command(name="ping")
