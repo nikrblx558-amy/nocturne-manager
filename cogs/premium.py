@@ -31,12 +31,20 @@ PREMIUM_MAX_PANELS = 10
 FREE_MAX_ROW_LINKS = 1       # link buttons per join/leave embed
 PREMIUM_MAX_ROW_LINKS = 5
 
+FREE_MAX_TICKET_PANELS = 1        # ticket panels per server
+PREMIUM_MAX_TICKET_PANELS = 5
+
+FREE_MAX_TICKET_CATEGORIES = 2    # categories per ticket panel
+PREMIUM_MAX_TICKET_CATEGORIES = 10
+
 # Maps the friendly name used in commands -> the actual key stored in JSON.
 LIMIT_KEYS = {
     "questions": "max_questions",
     "panels": "max_panels",
     "row_links": "max_row_links",
     "links": "max_row_links",
+    "ticket_panels": "max_ticket_panels",
+    "ticket_categories": "max_ticket_categories",
 }
 
 
@@ -53,12 +61,16 @@ async def get_limits(guild_id: int) -> dict:
             "max_questions": data.get("max_questions", PREMIUM_MAX_QUESTIONS),
             "max_panels": data.get("max_panels", PREMIUM_MAX_PANELS),
             "max_row_links": data.get("max_row_links", PREMIUM_MAX_ROW_LINKS),
+            "max_ticket_panels": data.get("max_ticket_panels", PREMIUM_MAX_TICKET_PANELS),
+            "max_ticket_categories": data.get("max_ticket_categories", PREMIUM_MAX_TICKET_CATEGORIES),
         }
     return {
         "premium": False,
         "max_questions": FREE_MAX_QUESTIONS,
         "max_panels": FREE_MAX_PANELS,
         "max_row_links": FREE_MAX_ROW_LINKS,
+        "max_ticket_panels": FREE_MAX_TICKET_PANELS,
+        "max_ticket_categories": FREE_MAX_TICKET_CATEGORIES,
     }
 
 
