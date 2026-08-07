@@ -1,6 +1,11 @@
 """
-/help command — a category dropdown panel showing every user-facing command,
-auto-branded with the bot's own icon and banner.
+/help command — built with Discord Components V2 (not classic embeds).
+
+This is a pilot conversion: Components V2 is a newer, separate message-
+building system (Container/TextDisplay/Section/MediaGallery/Separator)
+that cannot be mixed with classic embeds in the same message. It requires
+discord.py >= 2.6. Verified against the actually-installed discord.py
+version in this project before writing this file.
 """
 import json
 import os
@@ -8,11 +13,13 @@ import os
 import discord
 from discord import app_commands
 from discord.ext import commands
+from discord.components import MediaGalleryItem
 
 from utils.branding import BOT_BANNER_URL
 
 EMOJI_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "emojis.json")
 PREFIX = os.getenv("PREFIX", "n!")
+ACCENT_COLOR = 0x8B0000
 
 
 def load_emojis() -> dict:
@@ -70,54 +77,42 @@ CATEGORIES = {
 }
 
 
-def build_help_embed(bot: discord.Client, category: str = "overview") -> discord.Embed:
+def build_overview_text(bot: discord.Client) -> str:
     emojis = load_emojis()
-    color = discord.Color(0x8B0000)
+    jl = emojis.get("help_joinleave", "📥")
+    app = emojis.get("help_application", "📝")
+    tick = emojis.get("help_tickets", "🎫")
+    return (
+        f"# {bot.user.name}\n"
+        f"Hey! I'm **{bot.user.name}** — here to help manage your server.\n\n"
+        f"{jl} **Join & Leave** — custom embeds for members joining/leaving\n"
+        f"{app} **Applications** — build application panels with a live-preview builder\n"
+        f"{tick} **Tickets** — multi-category support tickets with a live-preview builder\n\n"
+        f"Use the dropdown below to see detailed commands for each category.\n"
+        f"My prefix is `{PREFIX}` — slash commands (`/...`) always work too."
+    )
 
-    if category == "overview" or category not in CATEGORIES:
-        jl_emoji = emojis.get("help_joinleave", "📥")
-        app_emoji = emojis.get("help_application", "📝")
-        tick_emoji = emojis.get("help_tickets", "🎫")
-        embed = discord.Embed(
-            title=bot.user.name,
-            description=(
-                f"Hey! I'm **{bot.user.name}** — here to help manage your server.\n\n"
-                f"{jl_emoji} **Join & Leave** — custom embeds for members joining/leaving\n"
-                f"{app_emoji} **Applications** — build application panels with a live-preview builder\n"
-                f"{tick_emoji} **Tickets** — multi-category support tickets with a live-preview builder\n\n"
-                f"Use the dropdown below to see detailed commands for each category.\n"
-                f"My prefix is `{PREFIX}` — slash commands (`/...`) always work too."
-            ),
-            color=color,
-        )
-    else:
-        cat = CATEGORIES[category]
-        emoji = emojis.get(cat["emoji_key"], "📁")
-        embed = discord.Embed(
-            title=f"{emoji} {cat['label']} Commands",
-            description=cat["description"],
-            color=color,
-        )
-        for name, desc in cat["commands"]:
-            embed.add_field(name=f"`{name}`", value=desc, inline=False)
 
-    embed.set_thumbnail(url=bot.user.display_avatar.url)
-    if BOT_BANNER_URL:
-        embed.set_image(url=BOT_BANNER_URL)
-    embed.set_footer(text=f"{bot.user.name} • Help")
-    return embed
+def build_category_text(category_key: str) -> str:
+    emojis = load_emojis()
+    cat = CATEGORIES[category_key]
+    emoji = emojis.get(cat["emoji_key"], "📁")
+    lines = [f"# {emoji} {cat['label']} Commands", cat["description"], ""]
+    for name, desc in cat["commands"]:
+        lines.append(f"**`{name}`**\n{desc}")
+    return "\n\n".join(lines)
 
 
 class HelpCategorySelect(discord.ui.Select):
-    def __init__(self, bot: discord.Client):
-        self.bot = bot
+    def __init__(self, outer: "HelpLayoutView"):
+        self.outer = outer
         emojis = load_emojis()
         options = [
             discord.SelectOption(
                 label="Overview", value="overview",
                 emoji=emojis.get("help_overview", "🏠"),
                 description="What I can do for your server",
-            ),
+            )
         ]
         for key, cat in CATEGORIES.items():
             options.append(
@@ -130,14 +125,41 @@ class HelpCategorySelect(discord.ui.Select):
         super().__init__(placeholder="📂 Select a category for detailed commands...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        embed = build_help_embed(self.bot, self.values[0])
-        await interaction.response.edit_message(embed=embed, view=self.view)
+        self.outer.category = self.values[0]
+        self.outer.rebuild()
+        await interaction.response.edit_message(view=self.outer)
 
 
-class HelpView(discord.ui.View):
-    def __init__(self, bot: discord.Client):
+class HelpLayoutView(discord.ui.LayoutView):
+    """Components V2 layout — replaces what used to be a classic Embed.
+    Everything (text, banner, thumbnail, dropdown) lives inside one
+    Container so it keeps the same accent-color side bar look an embed had."""
+
+    def __init__(self, bot: discord.Client, category: str = "overview"):
         super().__init__(timeout=180)
-        self.add_item(HelpCategorySelect(bot))
+        self.bot = bot
+        self.category = category
+        self.rebuild()
+
+    def rebuild(self):
+        for item in list(self.children):
+            self.remove_item(item)
+
+        text = build_overview_text(self.bot) if self.category not in CATEGORIES else build_category_text(self.category)
+
+        header = discord.ui.Section(
+            discord.ui.TextDisplay(text),
+            accessory=discord.ui.Thumbnail(media=self.bot.user.display_avatar.url),
+        )
+
+        children = [header]
+        if BOT_BANNER_URL:
+            children.append(discord.ui.MediaGallery(MediaGalleryItem(media=BOT_BANNER_URL)))
+        children.append(discord.ui.Separator())
+        children.append(discord.ui.ActionRow(HelpCategorySelect(self)))
+
+        container = discord.ui.Container(*children, accent_colour=discord.Color(ACCENT_COLOR))
+        self.add_item(container)
 
 
 class Help(commands.Cog):
@@ -146,13 +168,13 @@ class Help(commands.Cog):
 
     @app_commands.command(name="help", description="Show what Nocturne Manager can do and how to use it")
     async def help_slash(self, interaction: discord.Interaction):
-        embed = build_help_embed(self.bot, "overview")
-        await interaction.response.send_message(embed=embed, view=HelpView(self.bot), ephemeral=True)
+        view = HelpLayoutView(self.bot, "overview")
+        await interaction.response.send_message(view=view, ephemeral=True)
 
     @commands.command(name="help", aliases=["commands", "cmds"])
     async def help_prefix(self, ctx: commands.Context):
-        embed = build_help_embed(self.bot, "overview")
-        await ctx.send(embed=embed, view=HelpView(self.bot))
+        view = HelpLayoutView(self.bot, "overview")
+        await ctx.send(view=view)
 
 
 async def setup(bot: commands.Bot):
