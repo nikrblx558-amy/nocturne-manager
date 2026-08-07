@@ -19,14 +19,25 @@ from cogs.premium import get_limits
 store = JSONStore("tickets.json")            # panel configs (per guild -> panels -> panel_id -> config)
 ticket_store = JSONStore("ticket_channels.json")  # live ticket channel records (per guild -> channel_id -> record)
 
-AUTO_DELETE_DELAY = 10  # seconds to wait after Close before the channel auto-deletes (cancelled by Reopen)
-
 BUTTON_STYLE_MAP = {
     "primary": discord.ButtonStyle.primary,
     "secondary": discord.ButtonStyle.secondary,
     "success": discord.ButtonStyle.success,
     "danger": discord.ButtonStyle.danger,
 }
+
+# Friendly aliases so staff can type colors instead of Discord's internal names.
+BUTTON_STYLE_ALIASES = {
+    "primary": "primary", "blurple": "primary", "blue": "primary",
+    "secondary": "secondary", "grey": "secondary", "gray": "secondary",
+    "success": "success", "green": "success",
+    "danger": "danger", "red": "danger",
+}
+BUTTON_STYLE_DISPLAY = {"primary": "blurple", "secondary": "grey", "success": "green", "danger": "red"}
+
+
+def parse_button_style(text: str, default: str = "primary") -> str:
+    return BUTTON_STYLE_ALIASES.get((text or "").strip().lower(), default)
 
 
 def make_slug(name: str) -> str:
@@ -121,22 +132,16 @@ def build_open_view(guild_id, panel_id: str, config: dict) -> discord.ui.View | 
     return view
 
 
-def build_ticket_control_view(guild_id, channel_id) -> discord.ui.View:
+def build_ticket_control_view(guild_id, channel_id, claimed: bool = False) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     base = f"ntick:{{}}:{guild_id}:{channel_id}"
-    view.add_item(discord.ui.Button(label="Claim", emoji="🙋", style=discord.ButtonStyle.primary, custom_id=base.format("claim"), row=0))
+    view.add_item(discord.ui.Button(
+        label="Claimed" if claimed else "Claim", emoji="🙋",
+        style=discord.ButtonStyle.secondary if claimed else discord.ButtonStyle.primary,
+        custom_id=base.format("claim"), disabled=claimed, row=0,
+    ))
     view.add_item(discord.ui.Button(label="Close", emoji="🔒", style=discord.ButtonStyle.danger, custom_id=base.format("close"), row=0))
     view.add_item(discord.ui.Button(label="Close with Reason", emoji="📝", style=discord.ButtonStyle.danger, custom_id=base.format("close_reason"), row=0))
-    view.add_item(discord.ui.Button(label="Add User", emoji="➕", style=discord.ButtonStyle.secondary, custom_id=base.format("adduser"), row=1))
-    view.add_item(discord.ui.Button(label="Remove User", emoji="➖", style=discord.ButtonStyle.secondary, custom_id=base.format("removeuser"), row=1))
-    view.add_item(discord.ui.Button(label="Transcript", emoji="📄", style=discord.ButtonStyle.secondary, custom_id=base.format("transcript"), row=1))
-    return view
-
-
-def build_closed_ticket_view(guild_id, channel_id) -> discord.ui.View:
-    view = discord.ui.View(timeout=None)
-    view.add_item(discord.ui.Button(label="Delete Channel", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id=f"ntick:delete:{guild_id}:{channel_id}", row=0))
-    view.add_item(discord.ui.Button(label="Reopen", emoji="🔓", style=discord.ButtonStyle.success, custom_id=f"ntick:reopen:{guild_id}:{channel_id}", row=0))
     return view
 
 
@@ -290,21 +295,30 @@ class EditCategoryInfoModal(discord.ui.Modal, title="Edit Category"):
             default=cat.get("welcome_message", ""), max_length=1000, required=False,
         )
         self.max_input = discord.ui.TextInput(label="Max open tickets per user", default=str(cat.get("max_tickets_per_user", 1)), max_length=2)
+        self.style_input = discord.ui.TextInput(
+            label="Button type: primary/secondary/success/danger",
+            default=cat.get("button_style", "primary"), max_length=10, required=False,
+        )
         self.add_item(self.label_input)
         self.add_item(self.emoji_input)
         self.add_item(self.welcome_input)
         self.add_item(self.max_input)
+        self.add_item(self.style_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
             max_tickets = max(0, int(self.max_input.value.strip()))
         except ValueError:
             max_tickets = 1
+        style_value = self.style_input.value.strip().lower()
+        if style_value not in BUTTON_STYLE_MAP:
+            style_value = "primary"
         cat = self.manage_view.get_category()
         cat["label"] = self.label_input.value
         cat["emoji"] = self.emoji_input.value or None
         cat["welcome_message"] = self.welcome_input.value
         cat["max_tickets_per_user"] = max_tickets
+        cat["button_style"] = style_value
         await self.manage_view.save_and_refresh(interaction)
 
 
@@ -458,14 +472,16 @@ class CategoryManageView(discord.ui.View):
         cat_channel = f"<#{cat['category_channel_id']}>" if cat.get("category_channel_id") else "*none*"
         log_channel = f"<#{cat['log_channel_id']}>" if cat.get("log_channel_id") else "*none (no auto-transcript)*"
         required_role = f"<@&{cat['required_role_id']}>" if cat.get("required_role_id") else "*anyone can open*"
+        button_type = cat.get("button_style", "primary")
         return (
             f"### ⚙️ CATEGORY SETTINGS — {cat.get('label', self.category_id)}\n"
+            f"Button type: **{button_type}**  •  Emoji: {cat.get('emoji') or '*none*'}\n"
             f"Support roles: {roles}\n"
             f"Ticket category channel: {cat_channel}\n"
             f"Log channel: {log_channel}\n"
             f"Required role to open: {required_role}\n"
             f"Max tickets per user: **{cat.get('max_tickets_per_user', 1)}**\n"
-            f"-# Changes here save instantly. Close this message when you're done."
+            f"-# Changes here save instantly. Use **Edit Info** to change label/emoji/welcome/max/button type. Close this message when you're done."
         )
 
     async def save_and_refresh(self, interaction: discord.Interaction):
