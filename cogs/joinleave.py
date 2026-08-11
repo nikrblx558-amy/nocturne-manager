@@ -3,7 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils.storage import JSONStore
-from utils.embed_builder import build_joinleave_embed, build_row_link_view, resolve_content
+from utils.embed_builder import build_joinleave_layout
 from cogs.panel_builder import JoinLeaveBuilderView, DEFAULT_JOIN, DEFAULT_LEAVE
 from cogs.premium import get_limits
 
@@ -188,10 +188,8 @@ class JoinLeave(commands.Cog):
             pass
 
     async def _dispatch(self, channel: discord.abc.Messageable, config: dict, member, guild: discord.Guild):
-        embed = build_joinleave_embed(config, member=member, guild=guild)
-        link_view = build_row_link_view(config)
-        content_text = resolve_content(config, member=member, guild=guild)
-        await channel.send(content=content_text, embed=embed, view=link_view)
+        layout = build_joinleave_layout(config, member=member, guild=guild)
+        await channel.send(view=layout)
 
 
 async def setup(bot: commands.Bot):

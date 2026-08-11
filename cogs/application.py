@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import discord
 from discord import app_commands
 from discord.ext import commands
+from discord.components import MediaGalleryItem
 
 from utils.storage import JSONStore
 from utils.embed_builder import parse_color
@@ -52,6 +53,7 @@ def default_application_config(name: str) -> dict:
 
 
 def build_application_embed(config: dict) -> discord.Embed:
+    """Classic Embed — used ONLY by the live-preview builder (ApplicationBuilderView)."""
     embed = discord.Embed(
         title=config.get("title") or "Application",
         description=config.get("description") or "Click the button below to apply.",
@@ -72,56 +74,86 @@ def build_application_embed(config: dict) -> discord.Embed:
     return embed
 
 
-def build_apply_view(guild_id: int, panel_id: str, config: dict) -> discord.ui.View:
-    view = discord.ui.View(timeout=None)
-    view.add_item(
+def build_application_layout(guild_id: int, panel_id: str, config: dict) -> discord.ui.LayoutView:
+    """Components V2 layout — used for the ACTUAL published panel (with the
+    persistent Apply button baked directly into the same container)."""
+    title = config.get("title") or "Application"
+    description = config.get("description") or "Click the button below to apply."
+    thumb = config.get("thumbnail")
+    thumb = thumb if thumb and str(thumb).startswith("http") else None
+    banner = config.get("banner")
+    banner = banner if banner and str(banner).startswith("http") else None
+    footer = config.get("footer") or "Nocturne Manager • Application System"
+
+    header_text = f"# {title}\n{description}"
+    children = []
+    if thumb:
+        children.append(discord.ui.Section(discord.ui.TextDisplay(header_text), accessory=discord.ui.Thumbnail(media=thumb)))
+    else:
+        children.append(discord.ui.TextDisplay(header_text))
+
+    if banner:
+        children.append(discord.ui.MediaGallery(MediaGalleryItem(media=banner)))
+
+    children.append(discord.ui.Separator())
+    children.append(discord.ui.TextDisplay(f"-# {footer}"))
+    children.append(discord.ui.ActionRow(
         discord.ui.Button(
             label=(config.get("button_label") or "Apply Now")[:80],
             emoji=config.get("button_emoji") or None,
             style=discord.ButtonStyle.primary,
             custom_id=f"napp:apply:{guild_id}:{panel_id}",
         )
-    )
+    ))
+
+    container = discord.ui.Container(*children, accent_colour=discord.Color(parse_color(config.get("color"))))
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(container)
     return view
 
 
-def build_decision_view(
-    guild_id: int, panel_id: str, applicant_id: int, message_id: int,
-    jump_url: str = None, decided: bool = False,
-) -> discord.ui.View:
-    view = discord.ui.View(timeout=None)
-    base = f"napp:decision:{guild_id}:{panel_id}:{applicant_id}"
+def build_application_review_layout(
+    guild_id, panel_id: str, applicant_mention: str, applicant_id_str: str,
+    avatar_url: str, panel_title: str, color_hex: str,
+    answers: list, message_id, jump_url: str = None,
+    decided: bool = False, status_line: str = None,
+) -> discord.ui.LayoutView:
+    """Components V2 layout for the submission review message in the log
+    channel. Rebuilt from scratch (from stored data, not parsed off the old
+    message) whenever it needs to change — e.g. after Accept/Deny."""
+    header_text = f"# 📥 New Application — {panel_title}\nApplicant: {applicant_mention} (`{applicant_id_str}`)"
+    children = [discord.ui.Section(discord.ui.TextDisplay(header_text), accessory=discord.ui.Thumbnail(media=avatar_url))]
 
-    # Row 0 — the actual decision actions. Disabled once a decision is made.
-    view.add_item(discord.ui.Button(
-        label="Accept", style=discord.ButtonStyle.success,
-        custom_id=f"{base}:accept:{message_id}", disabled=decided, row=0,
-    ))
-    view.add_item(discord.ui.Button(
-        label="Deny", style=discord.ButtonStyle.danger,
-        custom_id=f"{base}:deny:{message_id}", disabled=decided, row=0,
-    ))
-    view.add_item(discord.ui.Button(
-        label="Accept with reason", style=discord.ButtonStyle.success,
-        custom_id=f"{base}:accept_reason:{message_id}", disabled=decided, row=0,
-    ))
-    view.add_item(discord.ui.Button(
-        label="Deny with reason", style=discord.ButtonStyle.danger,
-        custom_id=f"{base}:deny_reason:{message_id}", disabled=decided, row=0,
+    children.append(discord.ui.Separator())
+    for label, value in answers[:25]:
+        children.append(discord.ui.TextDisplay(f"**{label[:256]}**\n{(value or '-')[:1024]}"))
+
+    if status_line:
+        children.append(discord.ui.Separator())
+        children.append(discord.ui.TextDisplay(f"**Status**\n{status_line}"))
+
+    children.append(discord.ui.Separator())
+    children.append(discord.ui.TextDisplay("-# Nocturne Manager • Application System"))
+
+    base = f"napp:decision:{guild_id}:{panel_id}:{applicant_id_str}"
+    children.append(discord.ui.ActionRow(
+        discord.ui.Button(label="Accept", style=discord.ButtonStyle.success, custom_id=f"{base}:accept:{message_id}", disabled=decided),
+        discord.ui.Button(label="Deny", style=discord.ButtonStyle.danger, custom_id=f"{base}:deny:{message_id}", disabled=decided),
+        discord.ui.Button(label="Accept with reason", style=discord.ButtonStyle.success, custom_id=f"{base}:accept_reason:{message_id}", disabled=decided),
+        discord.ui.Button(label="Deny with reason", style=discord.ButtonStyle.danger, custom_id=f"{base}:deny_reason:{message_id}", disabled=decided),
     ))
 
-    # Row 1 — utility actions, stay enabled even after a decision is made.
-    view.add_item(discord.ui.Button(
-        label="History", style=discord.ButtonStyle.primary,
-        custom_id=f"napp:history:{guild_id}:{applicant_id}", row=1,
-    ))
-    view.add_item(discord.ui.Button(
-        label="Open Ticket with User", style=discord.ButtonStyle.secondary,
-        custom_id=f"napp:ticket:{guild_id}:{applicant_id}", row=1,
-    ))
+    utility_buttons = [
+        discord.ui.Button(label="History", style=discord.ButtonStyle.primary, custom_id=f"napp:history:{guild_id}:{applicant_id_str}"),
+        discord.ui.Button(label="Open Ticket with User", style=discord.ButtonStyle.secondary, custom_id=f"napp:ticket:{guild_id}:{applicant_id_str}"),
+    ]
     if jump_url:
-        view.add_item(discord.ui.Button(label="Jump to Message", style=discord.ButtonStyle.link, url=jump_url, row=1))
+        utility_buttons.append(discord.ui.Button(label="Jump to Message", style=discord.ButtonStyle.link, url=jump_url))
+    children.append(discord.ui.ActionRow(*utility_buttons))
 
+    container = discord.ui.Container(*children, accent_colour=discord.Color(parse_color(color_hex)))
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(container)
     return view
 
 
@@ -370,11 +402,10 @@ class PublishChannelSelect(discord.ui.ChannelSelect):
                 )
                 return
 
-        embed = build_application_embed(self.outer.config)
-        apply_view = build_apply_view(self.outer.guild.id, self.outer.panel_id, self.outer.config)
+        layout = build_application_layout(self.outer.guild.id, self.outer.panel_id, self.outer.config)
 
         try:
-            message = await channel.send(embed=embed, view=apply_view)
+            message = await channel.send(view=layout)
         except discord.Forbidden:
             await interaction.edit_original_response(
                 content=f"❌ I don't have permission to send messages in {channel.mention}. "
@@ -784,37 +815,42 @@ class ApplicationSystem(commands.Cog):
 
     async def _send_branding_embed(self, dm_channel: discord.DMChannel):
         """Sent right after a DM application is completed — shows the bot's
-        own name/icon/banner with Invite & Support Server buttons."""
+        own name/icon/banner with Invite & Support Server buttons. Built with
+        Components V2 (a LayoutView), not a classic embed."""
         bot_user = self.bot.user
-        embed = discord.Embed(
-            title=bot_user.name,
-            description=(
-                "**Nocturne Manager** is an all-in-one Discord bot built for growing communities — from slick "
-                "join/leave announcements to a full staff application system with a live-preview builder, "
-                "just like the one you used above.\n\n"
-                "✅ Custom join/leave embeds with your own branding\n"
-                "✅ Multiple application panels with custom questions\n"
-                "✅ Built-in Accept/Deny review workflow\n\n"
-                "Enjoyed the experience? Bring **Nocturne Manager** to your own server using the links below!"
-            ),
-            color=discord.Color(parse_color(None)),
+        text = (
+            f"# {bot_user.name}\n"
+            "**Nocturne Manager** is an all-in-one Discord bot built for growing communities — from slick "
+            "join/leave announcements to a full staff application system with a live-preview builder, "
+            "just like the one you used above.\n\n"
+            "✅ Custom join/leave embeds with your own branding\n"
+            "✅ Multiple application panels with custom questions\n"
+            "✅ Built-in Accept/Deny review workflow\n\n"
+            "Enjoyed the experience? Bring **Nocturne Manager** to your own server using the links below!"
         )
-        embed.set_thumbnail(url=bot_user.display_avatar.url)
-        if BOT_BANNER_URL:
-            embed.set_image(url=BOT_BANNER_URL)
-        embed.set_footer(text="Nocturne Manager • Application System")
 
-        view = discord.ui.View(timeout=None)
+        children = [
+            discord.ui.Section(discord.ui.TextDisplay(text), accessory=discord.ui.Thumbnail(media=bot_user.display_avatar.url))
+        ]
+        if BOT_BANNER_URL:
+            children.append(discord.ui.MediaGallery(MediaGalleryItem(media=BOT_BANNER_URL)))
+        children.append(discord.ui.Separator())
+        children.append(discord.ui.TextDisplay("-# Nocturne Manager • Application System"))
+
+        link_buttons = []
         if BOT_INVITE_URL:
-            view.add_item(discord.ui.Button(label="Invite Bot", style=discord.ButtonStyle.link, url=BOT_INVITE_URL))
+            link_buttons.append(discord.ui.Button(label="Invite Bot", style=discord.ButtonStyle.link, url=BOT_INVITE_URL))
         if SUPPORT_SERVER_URL:
-            view.add_item(discord.ui.Button(label="Join Support Server", style=discord.ButtonStyle.link, url=SUPPORT_SERVER_URL))
+            link_buttons.append(discord.ui.Button(label="Join Support Server", style=discord.ButtonStyle.link, url=SUPPORT_SERVER_URL))
+        if link_buttons:
+            children.append(discord.ui.ActionRow(*link_buttons))
+
+        container = discord.ui.Container(*children, accent_colour=discord.Color(parse_color(None)))
+        view = discord.ui.LayoutView(timeout=None)
+        view.add_item(container)
 
         try:
-            if view.children:
-                await dm_channel.send(embed=embed, view=view)
-            else:
-                await dm_channel.send(embed=embed)
+            await dm_channel.send(view=view)
         except discord.HTTPException:
             pass
 
@@ -833,23 +869,20 @@ class ApplicationSystem(commands.Cog):
                 pass
             return
 
-        embed = discord.Embed(
-            title=f"📥 New Application — {fresh_config.get('title', 'Application')}",
-            description=f"Applicant: {user.mention} (`{user.id}`)",
-            color=discord.Color(parse_color(fresh_config.get("color"))),
-            timestamp=datetime.now(timezone.utc),
-        )
-        for label, value in answers[:25]:
-            embed.add_field(name=label[:256], value=(value or "-")[:1024], inline=False)
-        embed.set_footer(text="Nocturne Manager • Application System")
-        if user.display_avatar:
-            embed.set_thumbnail(url=user.display_avatar.url)
+        panel_title = fresh_config.get("title", "Application")
+        avatar_url = user.display_avatar.url if user.display_avatar else None
 
-        # Send first WITHOUT the view, since the buttons need this message's
-        # own ID baked into their custom_id — then attach the view right after.
-        message = await channel.send(embed=embed)
-        decision_view = build_decision_view(guild_id, panel_id, user.id, message.id, jump_url=message.jump_url)
-        await message.edit(view=decision_view)
+        # Send first WITHOUT the buttons, since they need this message's own ID
+        # baked into their custom_id — then attach the full layout right after.
+        placeholder = discord.ui.LayoutView(timeout=None)
+        placeholder.add_item(discord.ui.Container(discord.ui.TextDisplay("_ _"), accent_colour=discord.Color(parse_color(fresh_config.get("color")))))
+        message = await channel.send(view=placeholder)
+
+        layout = build_application_review_layout(
+            guild_id, panel_id, user.mention, str(user.id), avatar_url,
+            panel_title, fresh_config.get("color"), answers, message.id, jump_url=message.jump_url,
+        )
+        await message.edit(view=layout)
 
         records = await history_store.get_path(str(guild_id), str(user.id), default=[])
         records.append({
@@ -861,6 +894,7 @@ class ApplicationSystem(commands.Cog):
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "message_id": message.id,
             "channel_id": channel.id,
+            "answers": answers,
         })
         await history_store.set_path(str(guild_id), str(user.id), records)
 
@@ -880,39 +914,45 @@ class ApplicationSystem(commands.Cog):
 
     async def apply_decision(self, interaction: discord.Interaction, guild_id, panel_id: str, applicant_id, message_id, action: str, reason: str = None):
         """Shared by the plain Accept/Deny buttons AND the Accept/Deny-with-reason
-        modal submit. `interaction.message` is only populated for a direct
-        button click — for a modal submit we have to fetch the message ourselves."""
+        modal submit. We rebuild the whole V2 layout fresh from the stored
+        submission record (rather than editing the old one in place), since
+        Components V2 messages can't be selectively patched like embed fields."""
         accepted = action == "accept"
 
         panels = await store.get_path(str(guild_id), "panels", default={})
         config = panels.get(panel_id, {})
         panel_title = config.get("title", "Application")
 
-        source_message = interaction.message
-        if source_message is None:
-            try:
-                source_message = await interaction.channel.fetch_message(int(message_id))
-            except discord.HTTPException:
-                source_message = None
+        records = await history_store.get_path(str(guild_id), str(applicant_id), default=[])
+        record = next((r for r in records if str(r.get("message_id")) == str(message_id)), None)
+        answers = record.get("answers", []) if record else []
 
-        embed = source_message.embeds[0] if source_message and source_message.embeds else discord.Embed()
-        embed.color = discord.Color.green() if accepted else discord.Color.red()
+        jump_url = interaction.message.jump_url if interaction.message else f"https://discord.com/channels/{guild_id}/{interaction.channel_id}/{message_id}"
+        applicant_mention = f"<@{applicant_id}>"
+        applicant_member = interaction.guild.get_member(int(applicant_id))
+        avatar_url = applicant_member.display_avatar.url if applicant_member else None
+
         status_line = f"{'✅ Accepted' if accepted else '❌ Denied'} by {interaction.user.mention}"
         if reason:
             status_line += f"\n**Reason:** {reason}"
-        embed.add_field(name="Status", value=status_line, inline=False)
 
-        jump_url = source_message.jump_url if source_message else None
-        disabled_view = build_decision_view(guild_id, panel_id, int(applicant_id), int(message_id), jump_url=jump_url, decided=True)
+        new_layout = build_application_review_layout(
+            guild_id, panel_id, applicant_mention, str(applicant_id), avatar_url,
+            panel_title, config.get("color"), answers, message_id, jump_url=jump_url,
+            decided=True, status_line=status_line,
+        )
 
         if interaction.message is not None:
             # Came straight from the button — this interaction IS the message.
-            await interaction.response.edit_message(embed=embed, view=disabled_view)
+            await interaction.response.edit_message(view=new_layout)
         else:
-            # Came from the reason modal — need to defer + edit the fetched message separately.
+            # Came from the reason modal — need to defer + edit the message separately.
             await interaction.response.defer(ephemeral=True)
-            if source_message is not None:
-                await source_message.edit(embed=embed, view=disabled_view)
+            try:
+                source_message = await interaction.channel.fetch_message(int(message_id))
+                await source_message.edit(view=new_layout)
+            except discord.HTTPException:
+                pass
             await interaction.followup.send("✅ Decision recorded.", ephemeral=True)
 
         await self._update_submission_status(
