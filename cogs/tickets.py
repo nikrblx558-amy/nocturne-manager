@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import discord
 from discord import app_commands
 from discord.ext import commands
+from discord.components import MediaGalleryItem
 
 from utils.storage import JSONStore
 from utils.embed_builder import parse_color
@@ -18,6 +19,8 @@ from cogs.premium import get_limits
 
 store = JSONStore("tickets.json")            # panel configs (per guild -> panels -> panel_id -> config)
 ticket_store = JSONStore("ticket_channels.json")  # live ticket channel records (per guild -> channel_id -> record)
+
+AUTO_DELETE_DELAY = 10  # seconds to wait after Close before the channel auto-deletes (cancelled by Reopen)
 
 BUTTON_STYLE_MAP = {
     "primary": discord.ButtonStyle.primary,
@@ -78,6 +81,9 @@ def default_category(label: str) -> dict:
 
 
 def build_ticket_panel_embed(config: dict) -> discord.Embed:
+    """Classic Embed — kept only for reference/consistency; the builder in
+    this file uses its own live-preview embed, this one isn't wired into the
+    published panel anymore (see build_ticket_panel_layout below)."""
     embed = discord.Embed(
         title=config.get("title") or "Support Tickets",
         description=config.get("description") or "Click a button below to open a ticket.",
@@ -106,42 +112,122 @@ def build_ticket_panel_embed(config: dict) -> discord.Embed:
     return embed
 
 
-def build_open_view(guild_id, panel_id: str, config: dict) -> discord.ui.View | None:
+def build_ticket_panel_layout(guild_id, panel_id: str, config: dict) -> discord.ui.LayoutView:
+    """Components V2 layout — used for the ACTUAL published ticket panel
+    (with the Open buttons/dropdown baked directly into the same container)."""
+    title = config.get("title") or "Support Tickets"
+    description = config.get("description") or "Click a button below to open a ticket."
+    thumb = config.get("thumbnail")
+    thumb = thumb if thumb and str(thumb).startswith("http") else None
+    banner = config.get("banner")
+    banner = banner if banner and str(banner).startswith("http") else None
+    footer = config.get("footer") or "Nocturne Manager • Ticket System"
+
     categories = config.get("categories", [])
-    if not categories:
-        return None
-    view = discord.ui.View(timeout=None)
-    if config.get("style") == "dropdown":
+    if categories:
+        cat_lines = "\n".join(f"{cat.get('emoji') or '🎫'} **{cat['label']}**" for cat in categories)
+    else:
+        cat_lines = "*No categories configured yet.*"
+    header_text = f"# {title}\n{description}\n\n**Available Categories**\n{cat_lines}"
+
+    children = []
+    if thumb:
+        children.append(discord.ui.Section(discord.ui.TextDisplay(header_text), accessory=discord.ui.Thumbnail(media=thumb)))
+    else:
+        children.append(discord.ui.TextDisplay(header_text))
+
+    if banner:
+        children.append(discord.ui.MediaGallery(MediaGalleryItem(media=banner)))
+
+    children.append(discord.ui.Separator())
+    children.append(discord.ui.TextDisplay(f"-# {footer}"))
+
+    if config.get("style") == "dropdown" and categories:
         options = [
             discord.SelectOption(label=cat["label"][:100], value=cat["id"], emoji=cat.get("emoji") or None)
             for cat in categories[:25]
         ]
-        view.add_item(discord.ui.Select(
-            placeholder="Select a ticket category...",
-            options=options,
+        children.append(discord.ui.ActionRow(discord.ui.Select(
+            placeholder="Select a ticket category...", options=options,
             custom_id=f"ntick:open_select:{guild_id}:{panel_id}",
-            row=0,
-        ))
-    else:
-        for i, cat in enumerate(categories[:25]):
-            style = BUTTON_STYLE_MAP.get(cat.get("button_style", "primary"), discord.ButtonStyle.primary)
-            view.add_item(discord.ui.Button(
-                label=cat["label"][:80], emoji=cat.get("emoji") or None, style=style,
-                custom_id=f"ntick:open:{guild_id}:{panel_id}:{cat['id']}", row=i // 5,
-            ))
+        )))
+    elif categories:
+        # Buttons: max 5 per ActionRow, up to 5 rows (25 categories total).
+        for row_start in range(0, min(len(categories), 25), 5):
+            row_categories = categories[row_start:row_start + 5]
+            buttons = [
+                discord.ui.Button(
+                    label=cat["label"][:80], emoji=cat.get("emoji") or None,
+                    style=BUTTON_STYLE_MAP.get(cat.get("button_style", "primary"), discord.ButtonStyle.primary),
+                    custom_id=f"ntick:open:{guild_id}:{panel_id}:{cat['id']}",
+                )
+                for cat in row_categories
+            ]
+            children.append(discord.ui.ActionRow(*buttons))
+
+    container = discord.ui.Container(*children, accent_colour=discord.Color(parse_color(config.get("color"))))
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(container)
     return view
 
 
-def build_ticket_control_view(guild_id, channel_id, claimed: bool = False) -> discord.ui.View:
-    view = discord.ui.View(timeout=None)
+def build_ticket_welcome_layout(guild_id, channel_id, category: dict, color_hex: str, mention_text: str = None, claimed: bool = False) -> discord.ui.LayoutView:
+    """Components V2 layout sent as the first message in a newly-opened
+    ticket channel — welcome text plus all the control buttons in one
+    container. `mention_text` (opener + support role pings) goes in a
+    separate top-level TextDisplay since V2 can't use content= for that."""
+    header_text = f"# 🎫 {category['label']}\n{category.get('welcome_message') or 'Thanks for opening a ticket! Support will be with you shortly.'}"
+
     base = f"ntick:{{}}:{guild_id}:{channel_id}"
-    view.add_item(discord.ui.Button(
-        label="Claimed" if claimed else "Claim", emoji="🙋",
-        style=discord.ButtonStyle.secondary if claimed else discord.ButtonStyle.primary,
-        custom_id=base.format("claim"), disabled=claimed, row=0,
-    ))
-    view.add_item(discord.ui.Button(label="Close", emoji="🔒", style=discord.ButtonStyle.danger, custom_id=base.format("close"), row=0))
-    view.add_item(discord.ui.Button(label="Close with Reason", emoji="📝", style=discord.ButtonStyle.danger, custom_id=base.format("close_reason"), row=0))
+    children = [
+        discord.ui.TextDisplay(header_text),
+        discord.ui.Separator(),
+        discord.ui.TextDisplay("-# Nocturne Manager • Ticket System"),
+        discord.ui.ActionRow(
+            discord.ui.Button(
+                label="Claimed" if claimed else "Claim", emoji="🙋",
+                style=discord.ButtonStyle.secondary if claimed else discord.ButtonStyle.primary,
+                custom_id=base.format("claim"), disabled=claimed,
+            ),
+            discord.ui.Button(label="Close", emoji="🔒", style=discord.ButtonStyle.danger, custom_id=base.format("close")),
+            discord.ui.Button(label="Close with Reason", emoji="📝", style=discord.ButtonStyle.danger, custom_id=base.format("close_reason")),
+        ),
+        discord.ui.ActionRow(
+            discord.ui.Button(label="Add User", emoji="➕", style=discord.ButtonStyle.secondary, custom_id=base.format("adduser")),
+            discord.ui.Button(label="Remove User", emoji="➖", style=discord.ButtonStyle.secondary, custom_id=base.format("removeuser")),
+            discord.ui.Button(label="Transcript", emoji="📄", style=discord.ButtonStyle.secondary, custom_id=base.format("transcript")),
+        ),
+    ]
+
+    container = discord.ui.Container(*children, accent_colour=discord.Color(parse_color(color_hex)))
+    view = discord.ui.LayoutView(timeout=None)
+    if mention_text:
+        view.add_item(discord.ui.TextDisplay(mention_text))
+    view.add_item(container)
+    return view
+
+
+def build_ticket_closed_layout(guild_id, channel_id, closer_mention: str, reason: str = None) -> discord.ui.LayoutView:
+    """Components V2 layout posted when a ticket is closed — Delete/Reopen controls.
+    (This function was previously called but never defined — real bug, now fixed.)"""
+    text = f"# 🔒 Ticket Closed\nClosed by {closer_mention}"
+    if reason:
+        text += f"\n**Reason:** {reason}"
+    text += (
+        f"\n\nThis channel will be **automatically deleted in {AUTO_DELETE_DELAY} seconds**. "
+        f"Click **Reopen** before then to cancel, or **Delete Channel** to skip the wait."
+    )
+
+    children = [
+        discord.ui.TextDisplay(text),
+        discord.ui.ActionRow(
+            discord.ui.Button(label="Delete Channel", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id=f"ntick:delete:{guild_id}:{channel_id}"),
+            discord.ui.Button(label="Reopen", emoji="🔓", style=discord.ButtonStyle.success, custom_id=f"ntick:reopen:{guild_id}:{channel_id}"),
+        ),
+    ]
+    container = discord.ui.Container(*children, accent_colour=discord.Color(0x8B0000))
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(container)
     return view
 
 
@@ -363,11 +449,10 @@ class PublishChannelSelect(discord.ui.ChannelSelect):
                 await interaction.edit_original_response(content="❌ Couldn't find that channel. Please try again.", view=None)
                 return
 
-        embed = build_ticket_panel_embed(self.outer.config)
-        open_view = build_open_view(self.outer.guild.id, self.outer.panel_id, self.outer.config)
+        layout = build_ticket_panel_layout(self.outer.guild.id, self.outer.panel_id, self.outer.config)
 
         try:
-            message = await channel.send(embed=embed, view=open_view)
+            message = await channel.send(view=layout)
         except discord.Forbidden:
             await interaction.edit_original_response(
                 content=f"❌ I don't have permission to send messages in {channel.mention}.", view=None
@@ -996,19 +1081,11 @@ class TicketSystem(commands.Cog):
             await interaction.followup.send("❌ I don't have permission to create channels in this server.", ephemeral=True)
             return
 
-        embed = discord.Embed(
-            title=f"🎫 {category['label']}",
-            description=category.get("welcome_message") or "Thanks for opening a ticket! Support will be with you shortly.",
-            color=discord.Color(parse_color(panel.get("color"))),
-            timestamp=datetime.now(timezone.utc),
-        )
-        embed.set_footer(text=f"Opened by {interaction.user}")
-        control_view = build_ticket_control_view(guild_id, ticket_channel.id)
-
         mention_roles = " ".join(f"<@&{rid}>" for rid in category.get("support_role_ids", []))
-        content = f"{interaction.user.mention} {mention_roles}".strip()
+        mention_text = f"{interaction.user.mention} {mention_roles}".strip()
 
-        await ticket_channel.send(content=content or None, embed=embed, view=control_view)
+        welcome_layout = build_ticket_welcome_layout(guild_id, ticket_channel.id, category, panel.get("color"), mention_text=mention_text or None)
+        await ticket_channel.send(view=welcome_layout)
 
         record = {
             "panel_id": panel_id,
@@ -1090,17 +1167,8 @@ class TicketSystem(commands.Cog):
         record["close_reason"] = reason
         await self._save_ticket_record(guild_id, channel_id, record)
 
-        embed = discord.Embed(
-            title="🔒 Ticket Closed",
-            description=(
-                f"Closed by {interaction.user.mention}" + (f"\n**Reason:** {reason}" if reason else "") +
-                f"\n\nThis channel will be **automatically deleted in {AUTO_DELETE_DELAY} seconds**. "
-                f"Click **Reopen** before then to cancel, or **Delete Channel** to skip the wait."
-            ),
-            color=discord.Color(0x8B0000),
-        )
-        closed_view = build_closed_ticket_view(guild_id, channel_id)
-        await interaction.response.send_message(embed=embed, view=closed_view)
+        closed_layout = build_ticket_closed_layout(guild_id, channel_id, interaction.user.mention, reason=reason)
+        await interaction.response.send_message(view=closed_layout)
 
         if category and category.get("log_channel_id"):
             log_channel = channel.guild.get_channel(int(category["log_channel_id"]))
