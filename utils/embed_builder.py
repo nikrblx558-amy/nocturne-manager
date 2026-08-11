@@ -1,7 +1,17 @@
 """
 Embed builder for join/leave notifications.
+
+There are TWO renderers here on purpose:
+- `build_joinleave_embed()` returns a classic discord.Embed — used ONLY by
+  the live-preview panel builder (JoinLeaveBuilderView), since that UI relies
+  on the classic content+embed+view combo for its editing flow.
+- `build_joinleave_layout()` returns a Components V2 discord.ui.LayoutView —
+  used for the ACTUAL notification sent to the channel on a real join/leave
+  (and for `/joinleave test`). V2 cannot be mixed with classic embeds in the
+  same message, hence the two separate code paths.
 """
 import discord
+from discord.components import MediaGalleryItem
 from utils.variables import resolve_variables
 
 # Thin box-drawing separator line (NOT a thick block) for a clean, subtle look.
@@ -71,8 +81,83 @@ def build_joinleave_embed(config: dict, member=None, guild: discord.Guild = None
     return embed
 
 
+def build_joinleave_layout(config: dict, member=None, guild: discord.Guild = None) -> discord.ui.LayoutView:
+    """Components V2 version of the notification actually sent to the channel."""
+    color = parse_color(config.get("color"))
+
+    title = resolve_variables(config.get("title") or "", member, guild).strip()
+    description = resolve_variables(config.get("description") or "", member, guild).strip()
+
+    text_parts = []
+    if title:
+        text_parts.append(f"# {title}")
+    if description:
+        text_parts.append(description)
+    header_text = "\n\n".join(text_parts) or "\u200b"
+
+    thumb = config.get("thumbnail")
+    if thumb:
+        thumb = resolve_variables(thumb, member, guild)
+        if not thumb.startswith("http"):
+            thumb = None
+
+    banner = config.get("banner")
+    if banner:
+        banner = resolve_variables(banner, member, guild)
+        if not banner.startswith("http"):
+            banner = None
+
+    footer_text = resolve_variables(config.get("footer") or "", member, guild).strip()
+    if not footer_text:
+        footer_text = "Nocturne Manager • Join & Leave System"
+    if member is not None:
+        footer_text = f"{footer_text} • ID: {member.id}"
+
+    children = []
+    if thumb:
+        children.append(discord.ui.Section(discord.ui.TextDisplay(header_text), accessory=discord.ui.Thumbnail(media=thumb)))
+    else:
+        children.append(discord.ui.TextDisplay(header_text))
+
+    if banner:
+        children.append(discord.ui.MediaGallery(MediaGalleryItem(media=banner)))
+
+    for block in config.get("blocks", []):
+        btype = block.get("type")
+        if btype == "separator":
+            children.append(discord.ui.Separator())
+        elif btype == "field":
+            name = resolve_variables(block.get("name") or "\u200b", member, guild)
+            value = resolve_variables(block.get("value") or "\u200b", member, guild)
+            children.append(discord.ui.TextDisplay(f"**{name}**\n{value}"))
+        elif btype == "icon_field":
+            icon = block.get("icon", "")
+            name = resolve_variables(block.get("name") or "", member, guild)
+            value = resolve_variables(block.get("value") or "\u200b", member, guild)
+            children.append(discord.ui.TextDisplay(f"**{icon} {name}**\n{value}".strip()))
+
+    children.append(discord.ui.Separator())
+    children.append(discord.ui.TextDisplay(f"-# {footer_text}"))
+
+    link_buttons = [
+        discord.ui.Button(label=link["label"][:80], url=link["url"], style=discord.ButtonStyle.link)
+        for link in config.get("row_links", [])[:5]
+    ]
+    if link_buttons:
+        children.append(discord.ui.ActionRow(*link_buttons))
+
+    container = discord.ui.Container(*children, accent_colour=discord.Color(color))
+
+    view = discord.ui.LayoutView(timeout=None)
+    content_text = resolve_content(config, member, guild)
+    if content_text:
+        view.add_item(discord.ui.TextDisplay(content_text))
+    view.add_item(container)
+    return view
+
+
 def resolve_content(config: dict, member=None, guild: discord.Guild = None) -> str | None:
-    """Text sent outside the embed (above it), e.g. a greeting/mention."""
+    """Text shown above the main container, e.g. a greeting/mention."""
     text = resolve_variables(config.get("content") or "", member, guild).strip()
     return text or None
 
